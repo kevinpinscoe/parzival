@@ -134,13 +134,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
-      # REPO_DISPATCH_TOKEN: the same shared cross-repo dispatch credential
-      # already used by kevinpinscoe/get-wx and kevinpinscoe/metar-tool for
-      # this exact purpose — not a Parzival-specific token. Must exist as a
-      # secret on this repo before this workflow's first real run; not
-      # created by this change (see the checkpoint report for its current
-      # status on this repo). Dispatched only after a real GitHub Release
-      # with real assets exists, since kevinpinscoe/apt and kevinpinscoe/rpm
+      # REPO_DISPATCH_TOKEN: a fine-grained PAT dedicated to this repo,
+      # scoped to Contents: write on kevinpinscoe/apt and kevinpinscoe/rpm
+      # only. Must exist as a secret on this repo before this workflow's
+      # first real run. Dispatched only after a real GitHub Release with
+      # real assets exists, since kevinpinscoe/apt and kevinpinscoe/rpm
       # both download release assets by tag immediately on receipt.
       - name: Notify apt repo
         run: |
