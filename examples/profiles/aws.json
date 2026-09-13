@@ -1,0 +1,8 @@
+{
+  "secrets": {
+    "access_key": "bao:aws/myaccount#access_key_id",
+    "secret_key": "bao:aws/myaccount#secret_access_key"
+  },
+  "template": "[default]\naws_access_key_id = {{ .access_key }}\naws_secret_access_key = {{ .secret_key }}\n",
+  "inject": { "env": "AWS_SHARED_CREDENTIALS_FILE", "filename": "credentials" }
+}

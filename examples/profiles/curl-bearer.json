@@ -1,0 +1,7 @@
+{
+  "secrets": {
+    "token": "bao:app/example-api#token"
+  },
+  "template": "header = \"Authorization: Bearer {{ .token }}\"\n",
+  "inject": { "env": "EXAMPLE_CURL_CONFIG", "filename": "curl.conf" }
+}

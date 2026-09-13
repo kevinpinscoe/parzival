@@ -1,0 +1,7 @@
+{
+  "secrets": {
+    "password": "bao:app/postgres#password"
+  },
+  "template": "postgres.example.com:5432:*:dbuser:{{ .password }}\n",
+  "inject": { "env": "PGPASSFILE", "filename": "pgpass" }
+}

@@ -1,0 +1,32 @@
+[Unit]
+Description=Verify parzival-broker answers real tea.repos-list requests
+Documentation=https://github.com/kevinpinscoe/parzival
+After=network-online.target parzival-broker.service
+# No OnFailure= here, deliberately — same reasoning as
+# parzival-broker.service: this ships in the public package and must not
+# assume any operator's private alert mechanism. This unit's own exit
+# status (see check-parzival-broker.sh) is the generic success/failure
+# signal; a site wires that into its own alerting via a drop-in.
+[Service]
+Type=oneshot
+# Runs as the broker's own service account rather than a human operator's —
+# it's just a client of an already-authenticated broker over the socket, so
+# it needs no credential of its own, and this keeps the packaged unit free
+# of any specific person's username. The admin must grant this uid
+# (parzival-broker's) the tea.repos-list operation in authz.json, same as
+# any other authorized caller — see packaging/README.md.
+User=parzival-broker
+Group=parzival-broker
+EnvironmentFile=/etc/parzival-broker/environment
+# The interpreter is the ExecStart binary, and the script is its argument —
+# not stylistic. On a system running SELinux enforcing, naming
+# /usr/bin/bash (a well-known, correctly labelled binary) rather than the
+# script itself as the direct executable avoids depending on the packaged
+# script's own SELinux label being right at install time.
+ExecStart=/usr/bin/bash /usr/libexec/parzival-broker/check-parzival-broker.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=check-parzival-broker
+
+[Install]
+WantedBy=multi-user.target

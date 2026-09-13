@@ -1,0 +1,7 @@
+{
+  "secrets": {
+    "token": "bao:openbao/secondary#token"
+  },
+  "template": "{{ .token }}",
+  "inject": { "env_dir": "HOME", "filename": ".vault-token" }
+}

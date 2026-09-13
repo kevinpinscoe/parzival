@@ -1,0 +1,7 @@
+{
+  "secrets": {
+    "private_key": "bao:ssh/deploy-example#private_key"
+  },
+  "template": "{{ .private_key }}\n",
+  "inject": { "env": "PARZIVAL_SSH_KEY", "filename": "id_ed25519" }
+}

@@ -1,0 +1,9 @@
+{
+  "secrets": {
+    "db_password": "bao:app/wiki.example.com#db_password",
+    "db_root_password": "bao:app/wiki.example.com#db_root_password",
+    "secret_key": "bao:app/wiki.example.com#secret_key"
+  },
+  "template": "MARIADB_ROOT_PASSWORD={{ .db_root_password }}\nMARIADB_PASSWORD={{ .db_password }}\nMEDIAWIKI_SECRET_KEY={{ .secret_key }}\n",
+  "inject": { "env": "COMPOSE_ENV_FILE", "filename": "wiki.env" }
+}

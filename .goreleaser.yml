@@ -1,0 +1,263 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+#
+# Release pipeline. Runs from GitHub Actions (.github/workflows/release.yml)
+# against the github.com/kevinpinscoe/parzival repository. Two invariants
+# that pipeline enforces around this file, not repeated in every comment
+# below: (1)
+# release notes are ALWAYS supplied via `--release-notes release-notes.md`,
+# verified non-empty and leakage-clean before GoReleaser ever runs — see the
+# `release:` section's own note on why `changelog:` is left at its default
+# here rather than disabled; (2) the full build output in `dist/` is swept
+# for private-information leakage (scripts/release/scan-release-artifacts.sh)
+# between the build phase and the publish phase — see
+# .github/workflows/release.yml for the two-phase `--skip=publish` /
+# `publish` split that makes that gate possible.
+version: 2
+
+builds:
+  - id: parzival
+    main: ./cmd/parzival
+    binary: parzival
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ignore:
+      # No darwin/amd64 build: not a supported target host, and matches
+      # the house convention on every other Go repo here.
+      - goos: darwin
+        goarch: amd64
+    flags:
+      # A GoReleaser build option, not an ldflags entry — strips local
+      # filesystem build paths from the binary (part of this project's
+      # source-information-leakage review).
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .ShortCommit }}
+    env:
+      - CGO_ENABLED=0
+
+  - id: parzival-broker
+    main: ./cmd/parzival-broker
+    binary: parzival-broker
+    goos: [linux]
+    goarch: [amd64, arm64]
+    # No darwin build at all: the broker has no macOS/launchd implementation
+    # yet.
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .ShortCommit }}
+    env:
+      - CGO_ENABLED=0
+
+archives:
+  - id: parzival-archive
+    ids: [parzival]
+    name_template: "parzival-{{ .Os }}-{{ .Arch }}"
+    formats: [binary]
+  - id: parzival-broker-archive
+    ids: [parzival-broker]
+    name_template: "parzival-broker-{{ .Os }}-{{ .Arch }}"
+    formats: [binary]
+
+# RPM/DEB packaging. packaging/'s former developer-worktree paths
+# (ExecStart=/Documentation= under a developer's home directory) and
+# hardcoded site-specific defaults (BAO_ADDR, a specific Gitea owner name,
+# User=<a specific person's account>) are resolved as of this block — see
+# packaging/README.md for the admin-provided /etc/parzival-broker/
+# environment file that replaces those defaults, and each packaging/ file's
+# own comments for what changed and why.
+nfpms:
+  - id: parzival-packages
+    package_name: parzival
+    vendor: Kevin P. Inscoe
+    homepage: https://github.com/kevinpinscoe/parzival
+    maintainer: Kevin P. Inscoe <kevin.inscoe@gmail.com>
+    description: |-
+      Secret broker / credential-leak prevention system. Delivers secrets
+      from an encrypted store to the process that needs them at runtime,
+      never at rest, with a per-request approval policy and audit log.
+      Includes parzival-broker, an optional systemd service that lets an
+      untrusted client (e.g. an AI agent) use a credential through one
+      fixed, allowlisted operation without ever being able to read it.
+    license: Apache-2.0
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    section: utils
+    ids: [parzival, parzival-broker]
+    # parzival-broker's systemd integration is optional at the package
+    # level — installing this package does not require systemd (parzival
+    # the CLI has no such dependency), so this is a package recommendation
+    # for the broker's sake, not a hard requirement of the whole package.
+    recommends:
+      - systemd
+    # Real finding: rpm -qip on a first test build showed a build host's
+    # real hostname in "Build Host: ..." — nfpm's RPM writer defaults
+    # buildhost to the actual build machine's os.Hostname() when not set,
+    # which would leak the build host's real hostname into package
+    # metadata on every release even though the repo and its release
+    # assets are the thing being kept publication-clean. Pinned to a
+    # generic label instead.
+    rpm:
+      buildhost: ci.parzival
+    contents:
+      - src: packaging/systemd/parzival-broker.service
+        dst: /usr/lib/systemd/system/parzival-broker.service
+        file_info:
+          mode: 0644
+      - src: packaging/systemd/check-parzival-broker.service
+        dst: /usr/lib/systemd/system/check-parzival-broker.service
+        file_info:
+          mode: 0644
+      - src: packaging/systemd/check-parzival-broker.timer
+        dst: /usr/lib/systemd/system/check-parzival-broker.timer
+        file_info:
+          mode: 0644
+      - src: packaging/systemd/check-parzival-broker.sh
+        dst: /usr/libexec/parzival-broker/check-parzival-broker.sh
+        file_info:
+          mode: 0755
+      - src: packaging/sysusers.d/parzival-broker.conf
+        dst: /usr/lib/sysusers.d/parzival-broker.conf
+        file_info:
+          mode: 0644
+      # Empty directories the admin populates by hand (authz.json,
+      # consumers/, profiles/, openbao-secret-id.cred) — see INSTALL.md's
+      # broker installation steps. The package creates the structure so
+      # `ls /etc/parzival-broker` is meaningful immediately after install;
+      # it never creates or guesses the contents.
+      #
+      # Declared here as root:root (nfpm's default — an explicit
+      # file_info.group here does NOT work: dpkg/rpm apply unpack-time
+      # ownership before postinstall.sh runs, so the parzival-broker
+      # group does not exist yet). postinstall.sh chgrp's these three
+      # (and only these three — never recursively) to
+      # root:parzival-broker once systemd-sysusers has created the
+      # group, matching INSTALL.md's manual `install -d -m 0750 -o root
+      # -g parzival-broker` install sequence exactly.
+      - dst: /etc/parzival-broker
+        type: dir
+        file_info:
+          mode: 0750
+      - dst: /etc/parzival-broker/consumers
+        type: dir
+        file_info:
+          mode: 0750
+      - dst: /etc/parzival-broker/profiles
+        type: dir
+        file_info:
+          mode: 0750
+      - src: LICENSE
+        dst: /usr/share/doc/parzival/LICENSE
+      - src: NOTICE
+        dst: /usr/share/doc/parzival/NOTICE
+      # examples/, README.md, MANUAL.md are all public documentation but
+      # deliberately NOT shipped in the package's own `contents:` — they
+      # stay reachable from the GitHub repository itself instead. Whether
+      # to bundle them here is a separate, later packaging decision.
+    scripts:
+      postinstall: packaging/scripts/postinstall.sh
+      preremove: packaging/scripts/preremove.sh
+      postremove: packaging/scripts/postremove.sh
+
+homebrew_casks:
+  - name: parzival
+    # References the ARCHIVE block's own `id:` (parzival-archive), not the
+    # BUILD's id (parzival) — confirmed empirically: with the
+    # build id here instead, GoReleaser fails with "no linux/macos archives
+    # found matching ... ids=[parzival]" even though matching archives
+    # exist, because homebrew_casks' `ids:` filters on archive IDs. This
+    # only matters because this repo has two builds/archives (parzival +
+    # parzival-broker) to disambiguate between — a single-build repo can
+    # omit `ids:` entirely ("empty means all IDs"), which is why the
+    # get-wx/skills-tui house template doesn't show this gotcha.
+    ids: [parzival-archive]
+    repository:
+      owner: kevinpinscoe
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/kevinpinscoe/parzival
+    description: "Secret broker / credential-leak prevention system"
+    license: Apache-2.0
+    # No parzival-broker cask: Linux/systemd-only, no macOS equivalent yet.
+    #
+    # NOTE: this repository is currently private. A private repo's release
+    # assets are not fetchable by an unauthenticated `brew install --cask`
+    # on another machine, so this block is effectively inert until the
+    # repository becomes public — kept here now so that transition is
+    # "confirm this behaves correctly," not "write it from scratch."
+
+checksum:
+  name_template: "checksums.txt"
+
+sboms:
+  # Real finding: `artifacts: archive` never matched anything, in any
+  # build — this project's `archives:` blocks use
+  # `formats: [binary]`, so GoReleaser classifies the resulting artifacts as
+  # type Binary, not Archive. `artifacts: binary` is what actually generates
+  # an SBOM per built binary. Package-level (RPM/DEB) SBOMs via
+  # `artifacts: package` are a separate, later policy decision — not made
+  # here.
+  - id: parzival-sbom
+    artifacts: binary
+
+# Signing: keyless Sigstore/cosign via GitHub Actions OIDC. No key
+# material anywhere: cosign detects the
+# GitHub Actions OIDC token automatically (the workflow's `id-token: write`
+# permission on the release job is what makes that token available) and
+# signs against Sigstore's public transparency log — no $BAO_ADDR, no
+# $BAO_TOKEN, no OpenBao Transit key/policy/AppRole. Exact shape matches
+# the already-proven production pattern in kevinpinscoe/get-wx and
+# kevinpinscoe/metar-tool's own .goreleaser.yml `signs:` blocks — copied
+# verbatim, not reinvented. `--bundle=` (not `--output-signature=`) writes
+# the newer Sigstore bundle format (`.sigstore.json`), which carries the
+# certificate and transparency-log entry alongside the signature — that is
+# what makes offline verification with `cosign verify-blob --bundle=...`
+# possible without separately fetching the certificate.
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+
+changelog:
+  # Left at GoReleaser's default rather than `disable: true`:
+  # GoReleaser's docs say disabling the changelog ALSO disables
+  # `--release-notes`, which is the mechanism this project
+  # actually relies on for safe release notes. This block is never reached
+  # with its own generated content in practice: .github/workflows/release.yml
+  # always invokes `goreleaser release ... --release-notes release-notes.md`,
+  # and `--release-notes` takes precedence over the changelog machinery
+  # below when both could apply. The real enforcement — refusing to release
+  # at all without a hand-authored, leakage-clean release-notes.md — lives
+  # in scripts/release/require-release-notes.sh, run before GoReleaser is
+  # ever invoked, not in this file.
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - 'Merge pull request'
+      - 'Merge branch'
+
+release:
+  github:
+    owner: kevinpinscoe
+    name: parzival
+  name_template: "v{{ .Version }}"
+  # This repository's `main` mirrors its upstream `main` at the same
+  # commit, so a tag pushed to both remotes at the same commit names that
+  # commit directly on both forges — no cross-repo tag/commit ambiguity.
+  prerelease: auto
+  # v0.x.y-pre.N tags are semver pre-releases; GoReleaser's `prerelease: auto`
+  # marks the GitHub release accordingly. Never cut a stable vX.Y.Z tag
+  # before the project's own pre-release validation is complete — that's a
+  # release-tagging discipline enforced by whoever cuts the tag, not by
+  # this file.

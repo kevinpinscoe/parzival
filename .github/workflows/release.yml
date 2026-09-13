@@ -1,0 +1,163 @@
+# Production release workflow for github.com/kevinpinscoe/parzival.
+# Not wired to fire yet — no `v*.*.*` tag exists on this repo, and none is
+# created by this change. This file establishes the pipeline so it can be
+# reviewed before the first real tag is ever pushed, per the later,
+# separately-approved public-cutover gate.
+#
+# Pipeline: approved version tag -> release validation (fail-closed release
+# notes + privacy scan) -> GoReleaser -> SBOMs -> keyless cosign/Sigstore via
+# GitHub OIDC -> GitHub Release -> RPM repository dispatch -> APT repository
+# dispatch -> Homebrew tap publication.
+#
+# This is additive to, never a loosened version of, verify.yml — that
+# workflow stays permanently non-publishing (see its own header comment).
+# Reuses the exact tool pins and permission shape already proven in
+# production by kevinpinscoe/get-wx and kevinpinscoe/metar-tool's own
+# release.yml, inspected directly rather than reconstructed from memory:
+# same actions/checkout and actions/setup-go pins already used in
+# verify.yml, same sigstore/cosign-installer pin get-wx uses, same
+# goreleaser-action pin, same `contents: write` + `id-token: write`
+# permission pair, same two `gh api .../dispatches` calls with the same
+# event_type (`new-release`) and payload shape
+# (`client_payload[repo]`/`client_payload[tag]`) both kevinpinscoe/rpm and
+# kevinpinscoe/apt already consume — confirmed identical for both consumers
+# by reading their live `add-package.yml` workflows, not assumed.
+#
+# GoReleaser stays pinned to the exact v2.17.1 verify.yml already uses
+# (not get-wx/metar-tool's floating "~> v2" range) — deliberate, per
+# verify.yml's own comment: no mise.toml entry exists yet for GoReleaser,
+# so these workflows are the single source of truth for the version in use,
+# and a bump should be a deliberate, separately-validated change.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-pre.[0-9]+'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # contents: write — create the GitHub Release and upload its assets.
+    # id-token: write — required for keyless Sigstore/cosign OIDC signing.
+    # Scoped to this one job only; verify.yml's job carries neither.
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Fail closed before any build work happens: no hand-authored,
+      # leakage-clean release-notes.md, no release. No `--snapshot`
+      # tolerance here — this is the production path.
+      - name: Require release notes
+        run: bash scripts/release/require-release-notes.sh
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+
+      # rpm/rpm2cpio/cpio: needed by scan-release-artifacts.sh to extract and
+      # sweep .rpm contents below. Same tools verify.yml installs, same
+      # reason (extracting a package to scan its real contents).
+      - name: Install package-inspection tools
+        run: sudo apt-get update -y && sudo apt-get install -y rpm cpio
+
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          args: check
+
+      # Phase 1 of 2 — build only, never publish. Signs (keyless cosign),
+      # generates SBOMs, renders the nfpm/cask configs — everything lands in
+      # dist/, nothing leaves this runner yet. The whole point of a separate
+      # build phase is that the leak scan below runs against real release
+      # artifacts BEFORE anything is published, not after. Collapsing this
+      # into a single `goreleaser release --clean` (build+publish together)
+      # would let a real leak finding surface only after the GitHub Release
+      # and Homebrew cask already went out — exactly the ordering a release
+      # approval gate requires catching before publication, not after.
+      - name: GoReleaser build (publish deferred)
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          args: release --clean --skip=publish --release-notes release-notes.md
+
+      # Same SBOM-presence assertion verify.yml runs, against the real
+      # release build's dist/artifacts.json this time.
+      - name: Assert SBOM artifacts were actually generated
+        run: |
+          count=$(jq '[.[] | select(.type == "SBOM")] | length' dist/artifacts.json)
+          echo "SBOM artifacts in dist/artifacts.json: $count"
+          if [[ "$count" -eq 0 ]]; then
+            echo "::error::.goreleaser.yml declares an sboms: block but zero SBOM-typed artifacts were produced."
+            exit 1
+          fi
+          jq -r '.[] | select(.type == "SBOM") | "  " + .name' dist/artifacts.json
+
+      # Full-strength scan against the real release build, no --snapshot
+      # tolerance. A real finding here fails the job — nothing below this
+      # step (publish, then the two repository dispatches) can run before
+      # it passes.
+      - name: Scan release artifacts for private-data leaks
+        run: bash scripts/release/scan-release-artifacts.sh dist
+
+      # Phase 2 of 2 — only reached if the leak scan above passed. Publishes
+      # the already-built, already-scanned dist/ contents: creates the
+      # GitHub Release and uploads its assets, publishes the Homebrew cask.
+      # Does not rebuild anything.
+      - name: GoReleaser publish
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          args: publish --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      # REPO_DISPATCH_TOKEN: the same shared cross-repo dispatch credential
+      # already used by kevinpinscoe/get-wx and kevinpinscoe/metar-tool for
+      # this exact purpose — not a Parzival-specific token. Must exist as a
+      # secret on this repo before this workflow's first real run; not
+      # created by this change (see the checkpoint report for its current
+      # status on this repo). Dispatched only after a real GitHub Release
+      # with real assets exists, since kevinpinscoe/apt and kevinpinscoe/rpm
+      # both download release assets by tag immediately on receipt.
+      - name: Notify apt repo
+        run: |
+          gh api repos/kevinpinscoe/apt/dispatches \
+            --method POST \
+            --field event_type=new-release \
+            --field client_payload[repo]="${{ github.repository }}" \
+            --field client_payload[tag]="${{ github.ref_name }}"
+        env:
+          GH_TOKEN: ${{ secrets.REPO_DISPATCH_TOKEN }}
+
+      - name: Notify rpm repo
+        run: |
+          gh api repos/kevinpinscoe/rpm/dispatches \
+            --method POST \
+            --field event_type=new-release \
+            --field client_payload[repo]="${{ github.repository }}" \
+            --field client_payload[tag]="${{ github.ref_name }}"
+        env:
+          GH_TOKEN: ${{ secrets.REPO_DISPATCH_TOKEN }}

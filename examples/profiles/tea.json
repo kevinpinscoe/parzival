@@ -1,0 +1,9 @@
+{
+  "secrets": {
+    "token": "bao:app/parzival-broker/gitea#token",
+    "url": "bao:app/parzival-broker/gitea#url",
+    "user": "bao:app/parzival-broker/gitea#user"
+  },
+  "template": "logins:\n    - name: parzival\n      url: {{ .url }}\n      token: {{ .token }}\n      default: true\n      user: {{ .user }}\n      version_check: true\n",
+  "inject": { "filename": "tea/config.yml", "env_dir": "XDG_CONFIG_HOME" }
+}

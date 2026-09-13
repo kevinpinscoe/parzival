@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "name": "tea",
+  "description": "Gitea CLI. Read-only repository queries a client may request without ever receiving the Gitea token.",
+  "executable": "/usr/bin/tea",
+  "profile": "tea",
+  "operations": {
+    "repos-list": {
+      "description": "List the repositories owned by one Gitea user or organisation.",
+      "argv": ["repos", "list", "--owner", "${owner}", "--output", "json"],
+      "inputs": {
+        "owner": {
+          "description": "A Gitea username or organisation name.",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,38}",
+          "max_length": 39
+        }
+      },
+      "response": "json",
+      "timeout_seconds": 20
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "secrets": {
+    "token": "bao:app/github-homebrew#token"
+  },
+  "template": "{{ .token }}",
+  "inject": { "filename": "token" }
+}

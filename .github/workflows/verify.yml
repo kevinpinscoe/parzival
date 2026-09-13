@@ -1,0 +1,152 @@
+# Verification-only workflow for the private github.com/kevinpinscoe/parzival
+# mirror. It builds, tests,
+# and produces real release-shaped artifacts (archives, RPM/DEB, SBOM) for
+# inspection — it never signs, publishes, dispatches, or tags anything.
+#
+# Deliberately requires NO secrets: no OpenBao, no signing credentials, no
+# Homebrew/RPM/APT tokens, no private deployment credentials. That is what
+# makes it safe to run on every push/PR while the mirror stays private, and
+# it stays true even once GitHub Actions eventually becomes the production
+# release CI — the production release.yml that gets built later is a
+# separate, additive workflow, not a loosened version of this one.
+#
+# Tool pinning follows the same house pattern already proven in production
+# by kevinpinscoe/get-wx and kevinpinscoe/metar-tool: actions pinned by full
+# commit SHA (version in a trailing comment), GoReleaser installed via the
+# official goreleaser-action rather than an unpinned `curl | sh`, syft via
+# anchore/sbom-action's download-syft step. GoReleaser is pinned to an EXACT
+# version (v2.17.1), not get-wx/metar-tool's "~> v2" range — deliberate for
+# this first release: no `mise.toml` entry exists yet for GoReleaser (only
+# Go and markdownlint-cli2 are pinned there), so this workflow is the single
+# source for now. Reproducibility chain: Go from go.mod, goreleaser-action
+# by immutable commit SHA, GoReleaser binary at an exact version. A version
+# bump is a deliberate later change with its own validation, not a side
+# effect of this workflow floating to whatever "~> v2" resolves to on a
+# given day.
+name: Verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -count=1 ./...
+
+      - name: go test -race
+        run: go test -race ./...
+
+      # rpm/rpm2cpio/cpio: needed by scan-release-artifacts.sh to extract and
+      # sweep .rpm contents below. dpkg-deb/file/strings ship on ubuntu-latest
+      # already. Same tools the kevinpinscoe/rpm repo's own workflow installs,
+      # for the same reason (extracting a package to scan its real contents).
+      - name: Install package-inspection tools
+        run: sudo apt-get update -y && sudo apt-get install -y rpm cpio
+
+      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          args: check
+
+      # Snapshot mode: builds real archives + RPM (amd64/arm64) + DEB
+      # (amd64/arm64) + one SBOM per binary + SBOMs via the existing
+      # .goreleaser.yml, with --skip=sign,publish,announce,validate so
+      # nothing leaves this runner and no signing credential is ever needed.
+      # No `id-token: write` above, so keyless Sigstore signing could not
+      # run even if `signs:` were invoked — it isn't.
+      - name: GoReleaser snapshot build (verification only)
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.17.1
+          args: release --snapshot --clean --skip=sign,publish,announce,validate
+
+      # Real finding: `sboms: artifacts: archive`
+      # silently matched nothing, in any build, because this project's
+      # archives are typed Binary (formats: [binary]), not Archive — fixed
+      # in .goreleaser.yml to `artifacts: binary`. This assertion is what
+      # stops that regressing silently again: it reads GoReleaser's own
+      # authoritative dist/artifacts.json rather than globbing a filename,
+      # and fails the job if the config claims SBOMs but none were produced.
+      - name: Assert SBOM artifacts were actually generated
+        run: |
+          count=$(jq '[.[] | select(.type == "SBOM")] | length' dist/artifacts.json)
+          echo "SBOM artifacts in dist/artifacts.json: $count"
+          if [[ "$count" -eq 0 ]]; then
+            echo "::error::.goreleaser.yml declares an sboms: block but zero SBOM-typed artifacts were produced — this regressed once already (artifacts: archive vs. formats: [binary]), do not let it pass silently again."
+            exit 1
+          fi
+          jq -r '.[] | select(.type == "SBOM") | "  " + .name' dist/artifacts.json
+
+      # --snapshot: a missing release-notes.md is expected here (no release
+      # is being cut) rather than a failure — see the script's own comment
+      # above section 3. Every real leak check still runs at full strength,
+      # including against the SBOM files themselves (swept in section 2b as
+      # ordinary non-binary, non-package artifacts); this is not `|| true`
+      # and a real finding still fails the job.
+      - name: Scan snapshot artifacts for private-data leaks
+        run: bash scripts/release/scan-release-artifacts.sh --snapshot dist
+
+      # This workflow runs both on real GitHub Actions and, unmodified,
+      # on this self-hosted Gitea instance (Gitea Actions is compatible enough
+      # with the workflow syntax to run the same file). actions/upload-artifact
+      # v4+ refuses outright there (GHESNotSupportedError) because it detects
+      # anything that isn't github.com as "GHES" and the newer artifact
+      # protocol (@actions/artifact v2+) those versions require isn't
+      # implemented there. It also isn't merely unimplemented -- Gitea's own
+      # V4 artifact protocol has an unrelated, unpatched critical
+      # vulnerability on this instance (CVE-2026-58426 / GHSA-hg5r-vq93-9fv6,
+      # CVSS 9.6: a signed-URL HMAC ambiguity allowing cross-repo artifact
+      # read / cross-task write; fixed in Gitea 1.26.2, this instance runs
+      # 1.25.4), so v4+ must not be used against it even once the refusal is
+      # worked around. actions/upload-artifact@v3.2.2 talks to the older,
+      # unaffected v3-era artifact API and is confirmed working here (node24
+      # runtime, same as this step needs, already proven by actions/checkout
+      # above). Real GitHub Actions keeps v7 -- github.server_url is the only
+      # signal that reliably tells the two apart from inside a running job.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && github.server_url == 'https://github.com'
+        with:
+          name: verify-artifacts-${{ github.sha }}
+          path: dist/
+          retention-days: 14
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@c6a366c94c3e0affe28c06c8df20a878f24da3cf # v3.2.2
+        if: always() && github.server_url != 'https://github.com'
+        with:
+          name: verify-artifacts-${{ github.sha }}
+          path: dist/
+          retention-days: 14
+          if-no-files-found: error

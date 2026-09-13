@@ -1,0 +1,36 @@
+# Go build artifacts
+/parzival
+*.test
+*.out
+coverage.txt
+
+# GoReleaser local build output
+/dist/
+
+# Session / scratch files
+**/resume.sh
+**/resume.txt
+
+# Editor / OS junk
+**/*.swp
+**/.DS_Store
+**/Thumbs.db
+
+# Python artifacts
+**/*.pyc
+**/*.pyo
+**/__pycache__/
+
+# Local AI-assistant settings
+**/.claude/
+**/.claude/settings.local.json
+**/.codex
+
+# Obsidian per-machine state
+**/.trash/
+**/.obsidian/workspace.json
+**/.obsidian/graph.json
+**/.obsidian/plugins/*/data.json
+
+# AI project worktrees (see ~/ai/directives/gitignore.md)
+**/ai-wt/

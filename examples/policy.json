@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "rules": [
+    {
+      "allow": false,
+      "description": "Production is never brokered from this host. A deny-rule placed first cannot be reached around, because the first matching rule decides.",
+      "secrets": ["bao:prod/*"]
+    },
+    {
+      "allow": false,
+      "description": "An exception, placed deliberately ABOVE the rule it carves a hole in. Because the first matching rule decides, this deny takes agent-quarantine out of the broader agent-* allow immediately below — while every other agent-* label still gets it. Order is the whole mechanism: move this rule below the next one and it never fires at all. `parzival policy validate` reports the overlap as a warning rather than an error precisely because this shape is normal — it cannot tell a deliberate exception from an accidental one, so it says what it sees and leaves the judgement to you.",
+      "secrets": ["bao:app/*"],
+      "identities": ["agent-quarantine"]
+    },
+    {
+      "allow": true,
+      "description": "Gitea token for AI agents and other non-human callers: brokered delivery only, so an agent can USE the credential without ever seeing its value.",
+      "secrets": ["bao:app/gitea#*"],
+      "identities": ["ai", "agent-*"],
+      "modes": ["exec", "mount"]
+    },
+    {
+      "allow": true,
+      "description": "Same ref, human and service identities, working hours only. Note this rule ALSO lists modes without get. That is what makes the rule above real: identity labels are self-asserted, so if any single rule permitted get on this ref, a caller could pass --as tea and read the raw value regardless of the agent restriction. Restrict the REF, not the IDENTITY. Verify with: parzival policy check",
+      "secrets": ["bao:app/gitea#*"],
+      "identities": ["tea", "docker", "dashboard"],
+      "modes": ["exec", "mount"],
+      "weekdays": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+      "hours": "08:00-18:00"
+    },
+    {
+      "allow": true,
+      "description": "A deliberate raw-value exception: interactive human use of a personal vault, piped by hand to a tool with no other interface. `parzival policy check` reports this ref as readable, which is correct and expected here. Do not write a rule of this shape for any ref a non-human identity can reach.",
+      "secrets": ["op://Private/*"],
+      "identities": ["kevin"]
+    }
+  ]
+}

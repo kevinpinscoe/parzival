@@ -1,0 +1,35 @@
+// Repo-local markdownlint configuration.
+//
+// Mirrors the shared config at ~/.config/markdownlint/.markdownlint-cli2.jsonc and adds two
+// repo-specific rules. Both are also declared inline in the affected files, because the `mdlint`
+// alias passes --config explicitly and would otherwise never read this file.
+{
+  "config": {
+    "default": true,
+
+    // Shared config (~/.config/markdownlint/.markdownlint-cli2.jsonc)
+    "MD013": false, // line length — prose here is hard-wrapped at 95, not 80
+    "MD033": false, // inline HTML
+    "MD041": false, // first line in file should be a top-level heading
+
+    // Some documents describe several similar things with the same subheading shape, so
+    // subheadings repeat by design under *different* parents — that is what the document is
+    // made of. Duplicates under the *same* parent are still a mistake, and still reported.
+    "MD024": { "siblings_only": true },
+
+    // This project's convention writes tracker/forge URLs as bare text — a terminal renders
+    // <https://…> and Markdown link syntax as something that cannot be copied. MD034 wants
+    // exactly the opposite, so it loses.
+    "MD034": false,
+
+    // A document may carry frontmatter with its own `title:` key, which MD025 counts as the
+    // document's top-level heading — making the file's own H1 a second one. Both the
+    // frontmatter title and the H1 a reader sees are legitimate, so this rule stays relaxed.
+    "MD025": { "front_matter_title": "" }
+  },
+  "globs": [
+    "**/*.md",
+    "!ai-wt/**", // project worktrees are copies of the repo; linting them double-reports
+    "!node_modules/**"
+  ]
+}

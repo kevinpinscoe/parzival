@@ -1,0 +1,17 @@
+[Unit]
+Description=Periodic parzival-broker health check (deadman + silent-fail)
+
+[Timer]
+# Every 10 minutes — more frequent than check-ydotool's hourly cadence,
+# since this watches a request-serving daemon rather than a rarely-changing
+# socket-ownership fact; a missed beat should page well before an agent
+# workflow depending on the broker notices it's down.
+OnCalendar=*:0/10
+# Hosts can lose power without warning; catch up a missed run rather than
+# waiting a full cycle after boot.
+Persistent=true
+OnBootSec=3min
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

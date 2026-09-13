@@ -1,0 +1,103 @@
+[Unit]
+Description=Parzival broker — tea.repos-list over AF_UNIX
+Documentation=https://github.com/kevinpinscoe/parzival
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+# No OnFailure= here, deliberately: this unit ships to
+# anyone installing the public package, and it must not depend on any one
+# operator's private alerting infrastructure. A site that wants edge-
+# triggered error detection on top of this unit's own Restart=on-failure
+# adds it as a systemd drop-in (`systemctl edit parzival-broker.service`)
+# pointing at whatever alert mechanism that site actually has.
+
+[Service]
+Type=simple
+User=parzival-broker
+Group=parzival-broker
+# The broker chowns its own socket to the parzival-clients
+# group immediately after binding it (internal/broker's
+# setSocketGroupAndMode), so any local account an administrator adds to
+# that group can reach it — filesystem admission only, never authority;
+# SO_PEERCRED + authz.json still decide every operation. chown(2) lets an
+# unprivileged process change a file it owns to any group it is itself a
+# member of, which is exactly why this needs to be a supplementary group
+# here rather than the process's primary Group= above — that stays
+# parzival-broker, matching the administrator trust-root-config ownership
+# contract documented in packaging/README.md, entirely separate from this
+# socket-reachability group.
+SupplementaryGroups=parzival-clients
+ExecStart=/usr/bin/parzival-broker \
+  -config-home=/etc/parzival-broker \
+  -authz=/etc/parzival-broker/authz.json \
+  -audit=/var/lib/parzival-broker/audit.log \
+  -runtime-dir=/run/parzival \
+  -socket=/run/parzival/broker.sock
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=10s
+
+# systemd-native directory management — created with correct ownership/mode
+# automatically; nothing here needs a hand-rolled mkdir/chown. See
+# INSTALL.md for what has to be placed inside ConfigurationDirectory= by
+# hand before first start (systemd only guarantees the directory itself,
+# not its contents).
+ConfigurationDirectory=parzival-broker
+StateDirectory=parzival-broker
+RuntimeDirectory=parzival
+RuntimeDirectoryPreserve=no
+
+# The broker's own OpenBao AppRole SecretID, decrypted by systemd itself at
+# start (host-key mode — this is a system unit's credential store, not the
+# interactive desktop's systemd-creds-user pattern; see INSTALL.md's
+# broker installation steps for how openbao-secret-id.cred is produced).
+# internal/store's SystemdCredentialProvider reads it from
+# $CREDENTIALS_DIRECTORY/openbao-secret-id automatically — no
+# PARZIVAL_OPENBAO_SECRET_ID_NAME override needed since that is the default
+# name.
+LoadCredentialEncrypted=openbao-secret-id:/etc/parzival-broker/openbao-secret-id.cred
+Environment=PARZIVAL_OPENBAO_AUTH=approle
+Environment=PARZIVAL_OPENBAO_SECRET_ID_PROVIDER=systemd-credential
+# Site-specific values live in an admin-provided EnvironmentFile, not baked
+# into this shipped unit: PARZIVAL_OPENBAO_ROLE_ID (the
+# AppRole's role_id — non-secret, but specific to one OpenBao instance) and
+# BAO_ADDR (that instance's URL). No default is shipped for either — the
+# unit fails to start with a clear "no such file" until the admin creates
+# this file, which is the correct failure mode (refuse to run
+# unconfigured, never guess a public default). See packaging/README.md and
+# INSTALL.md for the exact file to create.
+EnvironmentFile=/etc/parzival-broker/environment
+
+# Hardening — no baseline for a dedicated-service-account daemon existed
+# anywhere to copy from; this is the first unit here attempting one. Run
+# `systemd-analyze security parzival-broker.service` after install as the
+# self-check — read what it actually reports, don't assume this list is
+# correct just because it's long.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+# AF_INET/AF_INET6 stay allowed (not just AF_UNIX) because the broker's
+# OpenBao fetch is an HTTPS call to this site's OpenBao instance.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

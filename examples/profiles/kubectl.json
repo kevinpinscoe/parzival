@@ -1,0 +1,7 @@
+{
+  "secrets": {
+    "kubeconfig": "bao:k3s/kubeconfig#config"
+  },
+  "template": "{{ .kubeconfig }}",
+  "inject": { "env": "KUBECONFIG", "filename": "config" }
+}
