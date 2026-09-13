@@ -43,8 +43,8 @@ Perceval answers that Arthur and the land are one.
 ## Summary
 
 Parzival retrieves credentials from OpenBao only after its deny-by-default policy
-authorizes the request. 1Password is the human gate for access to the system, rather
-than a peer credential store in this deployment. `get` writes a raw value to stdout or
+authorizes the request. OpenBao is the reference backend for enforceable unattended use;
+1Password is supported for interactive workflows. `get` writes a raw value to stdout or
 an inherited file descriptor, while refusing in detected AI-agent shells; `exec` renders
 profile credentials to a short-lived RAM-backed file for one command; and Linux `mount`
 presents profile credentials as read-only virtual files that are fetched again on every
@@ -69,8 +69,6 @@ service are both implemented and exercised against real deployments, not just de
   and `packaging/README.md` for the trust model and installation contract.
 - Linux packaging (RPM and DEB) is built and tested via GoReleaser; macOS ships the CLI
   only, as a Homebrew cask — there is no macOS broker/service package.
-
-The full design and phased roadmap live in the project's planning documents.
 
 ## Installation
 

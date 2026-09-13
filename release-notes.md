@@ -45,8 +45,9 @@ and wipes the temporary copy afterward. Four goals drive the design:
 - **RPM** and **DEB** packages for the CLI and, on Linux, the broker service.
 - **Homebrew cask** for macOS (Apple Silicon).
 - **SBOMs** (SPDX, via Syft) for every published binary.
-- Every release artifact is signed keylessly via **Sigstore/cosign** using GitHub
-  Actions OIDC — no key material, verifiable offline with `cosign verify-blob --bundle=`.
+- Release checksums are signed keylessly with **Sigstore/cosign** through GitHub Actions
+  OIDC, providing verifiable integrity for the published artifacts without maintaining a
+  signing key — verify offline with `cosign verify-blob --bundle=`.
 
 ### Known limits at this stage
 
