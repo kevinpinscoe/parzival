@@ -16,12 +16,19 @@
 #     the expected commit, upload only the staged assets it is missing,
 #     and refuse (fail closed) if an asset it already has conflicts in
 #     size with the staged copy rather than silently re-uploading over it.
-#   - a PUBLISHED release already exists for the tag with exactly the
-#     expected asset set -> this phase is already done; exit 0 without
-#     touching anything.
+#   - a PUBLISHED release already exists for the tag and passes the exact
+#     same artifact-integrity check as a freshly-verified draft (asset
+#     count, names, every size, and digest where GitHub reports one) ->
+#     this phase is already done; exit 0 without touching anything. A
+#     published release with the right filenames but a replaced,
+#     truncated, or corrupted asset does NOT pass this and is NOT treated
+#     as done — see verify_asset_inventory(), used identically for both
+#     the published-release retry path and the draft readback below, so
+#     the two paths cannot drift apart.
 #   - a PUBLISHED release exists that does NOT match expectations (wrong
-#     target commit, wrong asset set) -> fail closed. This script never
-#     overwrites a conflicting release; that needs a human.
+#     target commit, wrong prerelease flag, or fails the integrity check
+#     above) -> fail closed. This script never overwrites a conflicting
+#     release; that needs a human.
 #
 # Usage: scripts/release/publish-github-release.sh <tag> [staging-dir] [release-notes.md]
 #   tag           the exact tag this release is for (e.g. v0.1.0-pre.2).
@@ -31,10 +38,13 @@
 #                 stage-release-assets.sh, including its manifest.json.
 #   release-notes.md  defaults to "release-notes.md" at the repo root.
 #
-# Exit 0: a DRAFT, prerelease, non-latest release for <tag> exists,
-# targeting the tag's own commit, carrying exactly the assets named in
-# staging-dir/manifest.json at the recorded sizes (and, where GitHub
-# reports a digest, matching sha256). Exit 1 on the first problem found.
+# Exit 0 in either of two cases, both fully verified against
+# staging-dir/manifest.json (exact asset count, exact names, every size,
+# and digest where GitHub reports one) before returning: a DRAFT,
+# prerelease, non-latest release for <tag> targeting the tag's own commit;
+# or a PUBLISHED release for <tag> that already carries the identical
+# asset set (the resume-on-retry no-op case). Exit 1 on the first problem
+# found, in either case.
 
 set -u
 cd "$(dirname "$0")/../.." || exit 1
@@ -77,20 +87,58 @@ check_target_commit() {
     fi
 }
 
+# The one artifact-integrity check, used identically for a PUBLISHED
+# release found on retry and for the draft this script just created or
+# resumed: exact asset count, exact asset names, every asset's size
+# nonzero and equal to the staged manifest, and — where GitHub reports a
+# digest — an exact sha256 match. A published release does not get a
+# lighter check just because its name and prerelease flag already looked
+# right: a release with the right filenames but a replaced, truncated, or
+# corrupted asset must fail here, not be waved through as "already done".
+verify_asset_inventory() {
+    local json="$1" context="$2"
+    local count names digest_compared=0 digest_skipped=0
+
+    count=$(jq '.assets | length' <<<"$json")
+    [[ "$count" -eq "$EXPECTED_COUNT" ]] ||
+        fail "$context release for $TAG: expected $EXPECTED_COUNT assets, found $count"
+
+    names=$(jq -r '[.assets[].name] | sort | .[]' <<<"$json")
+    [[ "$names" == "$EXPECTED_NAMES" ]] ||
+        fail "$context release for $TAG: asset names do not exactly match the staged manifest"
+
+    while IFS=$'\t' read -r name size sha; do
+        local a_size a_digest
+        a_size=$(jq -r --arg n "$name" '.assets[] | select(.name == $n) | .size' <<<"$json")
+        [[ "$a_size" -gt 0 ]] || fail "$context release for $TAG: asset '$name' has zero size"
+        [[ "$a_size" == "$size" ]] ||
+            fail "$context release for $TAG: asset '$name' size $a_size != staged size $size"
+
+        a_digest=$(jq -r --arg n "$name" '.assets[] | select(.name == $n) | (.digest // "")' <<<"$json")
+        if [[ -n "$a_digest" ]]; then
+            [[ "$a_digest" == "sha256:$sha" ]] ||
+                fail "$context release for $TAG: asset '$name' digest $a_digest != staged sha256:$sha"
+            digest_compared=$((digest_compared + 1))
+        else
+            digest_skipped=$((digest_skipped + 1))
+        fi
+    done < <(jq -r '.[] | [.name, .size, .sha256] | @tsv' "$MANIFEST")
+
+    ok "$context release for $TAG: $count assets verified ($digest_compared digest(s) checked, $digest_skipped size-only)"
+}
+
 if EXISTING_JSON=$(release_view); then
     IS_DRAFT=$(jq -r '.isDraft' <<<"$EXISTING_JSON")
     IS_PRE=$(jq -r '.isPrerelease' <<<"$EXISTING_JSON")
     TARGET=$(jq -r '.targetCommitish' <<<"$EXISTING_JSON")
     URL=$(jq -r '.url' <<<"$EXISTING_JSON")
-    EXISTING_NAMES=$(jq -r '[.assets[].name] | sort | .[]' <<<"$EXISTING_JSON")
 
     check_target_commit "$TARGET" "existing"
 
     if [[ "$IS_DRAFT" == "false" ]]; then
         [[ "$IS_PRE" == "true" ]] || fail "existing PUBLISHED release for $TAG is not marked prerelease — conflicts with expectations ($URL)"
-        [[ "$EXISTING_NAMES" == "$EXPECTED_NAMES" ]] ||
-            fail "existing PUBLISHED release for $TAG has an asset set that does not match the staged manifest — refusing to touch it ($URL)"
-        ok "release for $TAG is already published with the exact expected asset set — nothing to do ($URL)"
+        verify_asset_inventory "$EXISTING_JSON" "existing PUBLISHED"
+        ok "release for $TAG is already published with a fully verified asset set — nothing to do ($URL)"
         exit 0
     fi
 
@@ -121,31 +169,7 @@ FINAL_JSON=$(release_view) || fail "could not read back the release for $TAG aft
 [[ "$(jq -r '.isDraft' <<<"$FINAL_JSON")" == "true" ]] || fail "release for $TAG is not a draft — refusing to continue (publication happens in a later, separate step)"
 [[ "$(jq -r '.isPrerelease' <<<"$FINAL_JSON")" == "true" ]] || fail "release for $TAG is not marked prerelease"
 check_target_commit "$(jq -r '.targetCommitish' <<<"$FINAL_JSON")" "verified"
-
-FINAL_COUNT=$(jq '.assets | length' <<<"$FINAL_JSON")
-[[ "$FINAL_COUNT" -eq "$EXPECTED_COUNT" ]] || fail "expected $EXPECTED_COUNT release assets, draft has $FINAL_COUNT"
-
-FINAL_NAMES=$(jq -r '[.assets[].name] | sort | .[]' <<<"$FINAL_JSON")
-[[ "$FINAL_NAMES" == "$EXPECTED_NAMES" ]] || fail "draft's asset names do not exactly match the staged manifest"
-
-DIGEST_COMPARED=0
-DIGEST_SKIPPED=0
-while IFS=$'\t' read -r name size sha; do
-    a_size=$(jq -r --arg n "$name" '.assets[] | select(.name == $n) | .size' <<<"$FINAL_JSON")
-    [[ "$a_size" == "$size" ]] || fail "asset '$name': draft size $a_size != staged size $size"
-    [[ "$a_size" -gt 0 ]] || fail "asset '$name' has zero size"
-
-    a_digest=$(jq -r --arg n "$name" '.assets[] | select(.name == $n) | (.digest // "")' <<<"$FINAL_JSON")
-    if [[ -n "$a_digest" ]]; then
-        [[ "$a_digest" == "sha256:$sha" ]] ||
-            fail "asset '$name': draft digest $a_digest != staged sha256:$sha"
-        DIGEST_COMPARED=$((DIGEST_COMPARED + 1))
-    else
-        DIGEST_SKIPPED=$((DIGEST_SKIPPED + 1))
-    fi
-done < <(jq -r '.[] | [.name, .size, .sha256] | @tsv' "$MANIFEST")
-
-ok "verified $DIGEST_COMPARED asset digest(s); $DIGEST_SKIPPED had no digest reported by GitHub (size-only check)"
+verify_asset_inventory "$FINAL_JSON" "draft"
 
 DRAFT_URL=$(jq -r '.url' <<<"$FINAL_JSON")
-ok "draft release for $TAG verified: $EXPECTED_COUNT assets, target $EXPECTED_COMMIT, still a draft, marked prerelease ($DRAFT_URL)"
+ok "draft release for $TAG verified: target $EXPECTED_COMMIT, still a draft, marked prerelease, full asset inventory OK ($DRAFT_URL)"
