@@ -1,4 +1,4 @@
-## v0.1.0-pre.1 — first public prerelease
+## v0.1.0-pre.2 — first public prerelease
 
 This is Parzival's first public prerelease: **pre-1.0**, and the interfaces, policy
 format, and configuration layout may still change before a stable `v1.0.0`. The CLI and

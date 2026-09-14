@@ -1,16 +1,55 @@
 # Production release workflow for github.com/kevinpinscoe/parzival.
-# Not wired to fire yet — no `v*.*.*` tag exists on this repo, and none is
-# created by this change. This file establishes the pipeline so it can be
-# reviewed before the first real tag is ever pushed, per the later,
-# separately-approved public-cutover gate.
 #
 # Pipeline: approved version tag -> release validation (fail-closed release
-# notes + privacy scan) -> GoReleaser -> SBOMs -> keyless cosign/Sigstore via
-# GitHub OIDC -> GitHub Release -> RPM repository dispatch -> APT repository
-# dispatch -> Homebrew tap publication.
+# notes + privacy scan) -> GoReleaser build (binaries, RPM/DEB, SBOMs,
+# checksums, keyless cosign/Sigstore signing of checksums.txt, Homebrew
+# cask rendering) -> SBOM assertion -> full artifact leak scan -> stage
+# exactly the GitHub-Release-bound assets -> create/resume a DRAFT GitHub
+# Release -> verify the draft's full inventory -> publish the draft ->
+# publish the Homebrew cask -> RPM repository dispatch -> APT repository
+# dispatch.
 #
 # This is additive to, never a loosened version of, verify.yml — that
 # workflow stays permanently non-publishing (see its own header comment).
+#
+# BUILD -> SIGN -> SBOM -> FULL LEAK SCAN -> PUBLICATION is the invariant
+# this file exists to preserve. GoReleaser OSS has no way to split "build"
+# and "publish" into two separate CLI invocations against the same dist/ —
+# that split (`goreleaser publish` / `goreleaser continue`) is a GoReleaser
+# Pro feature only. v0.1.0-pre.1's real release run discovered this the
+# hard way: its "GoReleaser publish" step called a command
+# (`goreleaser publish --clean`) that does not exist in the OSS
+# distribution, and failed there — after the build, sign, SBOM, and full
+# leak scan phases had already succeeded against the real release
+# artifacts, so nothing was ever published (verified: zero GitHub Releases,
+# kevinpinscoe/homebrew-tap / rpm / apt all unchanged). v0.1.0-pre.1 stays
+# tagged, at that failed state, as a historical record — it is never
+# retagged, moved, or force-updated, and is not "repaired" by this fix.
+#
+# So this workflow keeps GoReleaser OSS for exactly what it already does
+# well — build, package, SBOM, checksum, keyless-sign, and render the
+# Homebrew cask, all still landing in dist/ before the leak scan runs — and
+# does everything after the leak scan (the actual publication) with
+# explicit `gh`/GitHub-API steps instead of a nonexistent GoReleaser
+# command. Neither GoReleaser Pro nor collapsing build+publish into one
+# `goreleaser release --clean` invocation was chosen: the former needs a
+# paid license this project doesn't carry, the latter would let a leak
+# finding surface only after the GitHub Release and Homebrew cask already
+# went out — exactly the ordering this pipeline exists to prevent.
+#
+# Every publication step below (`scripts/release/publish-github-release.sh`,
+# the plain `gh release edit --draft=false` step, and
+# `scripts/release/publish-homebrew-cask.sh`) is written to be safely
+# rerun: each one first checks whether its own public side effect already
+# happened — a matching draft or published release, an identical cask blob
+# — and resumes or no-ops rather than blindly repeating a create/upload
+# that already landed, or overwriting state that doesn't match what this
+# run expects (which it refuses instead, fail-closed). See each script's
+# own header for its exact resume/no-op/refuse rules. The two repository
+# dispatches stay last, run only once the GitHub Release is published and
+# the Homebrew cask publication is verified, since kevinpinscoe/apt and
+# kevinpinscoe/rpm both fetch release assets by tag immediately on receipt.
+#
 # Reuses the exact tool pins and permission shape already proven in
 # production by kevinpinscoe/get-wx and kevinpinscoe/metar-tool's own
 # release.yml, inspected directly rather than reconstructed from memory:
@@ -21,7 +60,8 @@
 # event_type (`new-release`) and payload shape
 # (`client_payload[repo]`/`client_payload[tag]`) both kevinpinscoe/rpm and
 # kevinpinscoe/apt already consume — confirmed identical for both consumers
-# by reading their live `add-package.yml` workflows, not assumed.
+# by reading their live `add-package.yml` workflows, not assumed. Those two
+# dispatch steps and their payload contract are unchanged by this fix.
 #
 # GoReleaser stays pinned to the exact v2.17.1 verify.yml already uses
 # (not get-wx/metar-tool's floating "~> v2" range) — deliberate, per
@@ -120,26 +160,58 @@ jobs:
       - name: Scan release artifacts for private-data leaks
         run: bash scripts/release/scan-release-artifacts.sh dist
 
-      # Phase 2 of 2 — only reached if the leak scan above passed. Publishes
-      # the already-built, already-scanned dist/ contents: creates the
-      # GitHub Release and uploads its assets, publishes the Homebrew cask.
-      # Does not rebuild anything.
-      - name: GoReleaser publish
-        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
-        with:
-          distribution: goreleaser
-          version: v2.17.1
-          args: publish --clean
+      # Phase 2 of 2 — only reached if the leak scan above passed. Reads
+      # dist/artifacts.json and copies exactly the assets a GitHub Release
+      # should carry into dist/release-assets/, under their GoReleaser
+      # `name` as filename, refusing (fail-closed) if the count or class of
+      # anything looks wrong. See the script's own header for the exact
+      # selection rules and why type alone can't be used to tell a
+      # publication-bound artifact from GoReleaser's other dist/ output.
+      - name: Stage GitHub Release assets
+        run: bash scripts/release/stage-release-assets.sh dist dist/release-assets
+
+      # Creates the release for this tag as a DRAFT (never published here),
+      # or safely resumes one from a previous failed run, then verifies its
+      # full asset inventory against dist/release-assets/manifest.json
+      # before exiting 0. See the script's own header for its exact
+      # create/resume/refuse rules. Nothing below this step can run before
+      # it passes.
+      - name: Create and verify draft GitHub Release
+        run: bash scripts/release/publish-github-release.sh "${{ github.ref_name }}"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The first point at which release artifacts become publicly
+      # available. Only reached once the draft above is verified. Safe to
+      # rerun: toggling an already-published release's draft flag to
+      # false again is a no-op.
+      - name: Publish GitHub Release
+        run: |
+          gh release edit "${{ github.ref_name }}" \
+            --draft=false --prerelease --latest=false --verify-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Publishes the already-rendered, already-leak-scanned cask exactly
+      # as GoReleaser wrote it — never regenerated here. Uses the Contents
+      # API directly (create, or update by current blob sha) rather than
+      # another release framework; idempotent if the tap's copy already
+      # matches. GH_TOKEN is scoped here to the dedicated
+      # HOMEBREW_TAP_TOKEN (Contents: write on kevinpinscoe/homebrew-tap
+      # only) — this step's own `gh api` calls never see the broader
+      # GITHUB_TOKEN above, and this script never prints the token's value.
+      - name: Publish Homebrew cask
+        run: bash scripts/release/publish-homebrew-cask.sh
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
       # REPO_DISPATCH_TOKEN: a fine-grained PAT dedicated to this repo,
       # scoped to Contents: write on kevinpinscoe/apt and kevinpinscoe/rpm
       # only. Must exist as a secret on this repo before this workflow's
-      # first real run. Dispatched only after a real GitHub Release with
-      # real assets exists, since kevinpinscoe/apt and kevinpinscoe/rpm
-      # both download release assets by tag immediately on receipt.
+      # first real run. Dispatched only after the GitHub Release is
+      # published and the Homebrew cask publication is verified above,
+      # since kevinpinscoe/apt and kevinpinscoe/rpm both download release
+      # assets by tag immediately on receipt.
       - name: Notify apt repo
         run: |
           gh api repos/kevinpinscoe/apt/dispatches \
