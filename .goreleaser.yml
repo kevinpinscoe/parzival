@@ -181,11 +181,9 @@ homebrew_casks:
     license: Apache-2.0
     # No parzival-broker cask: Linux/systemd-only, no macOS equivalent yet.
     #
-    # NOTE: this repository is currently private. A private repo's release
-    # assets are not fetchable by an unauthenticated `brew install --cask`
-    # on another machine, so this block is effectively inert until the
-    # repository becomes public — kept here now so that transition is
-    # "confirm this behaves correctly," not "write it from scratch."
+    # NOTE: this repository is public, so its release assets are fetchable
+    # by an unauthenticated `brew install --cask` from another machine —
+    # no separate visibility change is needed for this block to work.
 
 checksum:
   name_template: "checksums.txt"

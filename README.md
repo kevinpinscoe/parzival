@@ -1,28 +1,60 @@
-# Parzival
+# What is Parzival
 
-Parzival is a credential-leak prevention system for shell scripts and automated
-workflows. It identifies when secrets are entering unsafe execution paths and prevents
-them from being exposed through process arguments, logs, artifacts, or downstream
-workstreams. The Fisher King represents the infrastructure wounded by a leaked
-credential; Parzival is the agent that recognizes the danger and intervenes before the
-wound spreads.
+Parzival is a credential broker system that delivers four things:
 
-Parzival is also a secret broker that delivers credentials to a tool **only at
-runtime**, through the most secure interface that tool supports — preferring streams
-over files, and RAM over disk — so that long-lived plaintext secrets never sit on disk.
+1. A guarantee that only authorized programs and tools can access a given secret through
+   policy statements.
+2. Prevention of credential leaks into AI-agent sessions.
+3. Secrets kept encrypted and off local disk storage, regardless of the tool that
+   consumes the secret.
+4. Audit logging of which credentials were accessed and by what tool.
+
+- **Authorization — only approved tools may use approved secrets.** Policy determines
+  which identity or tool may use a particular credential and by which mode or broker
+  operation. The default is deny.
+- **AI credential containment — secrets must not leak into AI-agent context.** Agents
+  can use credentials through `exec`, `mount`, or broker operations without receiving
+  the raw value in stdout, transcripts, prompts, logs, or tool results. Raw `get` is
+  specifically blocked in detected AI-agent shells.
+- **No persistent plaintext credentials — keep secrets encrypted and off local persistent
+  storage.** Credentials remain in OpenBao, 1Password, or another encrypted store and
+  are fetched only when needed. Parzival uses streams, RAM-backed files, encrypted
+  systemd credentials, or other ephemeral mechanisms rather than ordinary plaintext
+  credential files. Parzival can guarantee what it itself does with a secret; it cannot
+  prevent a deliberately malicious consumer from taking a credential it legitimately
+  receives and writing it to disk.
+- **Accountability — audit which credentials were used, by whom, and for what.** Secret
+  access and use are auditable, including the requesting identity, tool or operation,
+  credential reference, authorization result, and outcome — without logging the secret
+  itself.
+
+## Why is it named Parzival
+
+> "What is the secret of the Grail? Who does it serve?"
+>
+> "You, my lord."
+>
+> "Who am I?"
+
+In John Boorman's *Excalibur* (1981), Perceval then recognizes the wounded figure as
+Arthur, his lord and king. Asked whether he has found the secret that was lost,
+Perceval answers that Arthur and the land are one.
 
 ## Summary
 
-Parzival (the `parzival` command) fetches a secret from an encrypted store (OpenBao, 1Password,
-gopass, KeePassXC) at the moment it is needed, hands it to the requesting command
-through a stream, a file descriptor, or a short-lived RAM-backed file, and then wipes
-it. The aim is to stop writing one-off wrapper scripts for every tool that demands a
-plaintext credential file, and to give each user, script, service, or AI agent access
-only to the specific secrets it needs.
+Parzival retrieves credentials from OpenBao only after its deny-by-default policy
+authorizes the request. OpenBao is the reference backend for enforceable unattended use;
+1Password is supported for interactive workflows. `get` writes a raw value to stdout or
+an inherited file descriptor, while refusing in detected AI-agent shells; `exec` renders
+profile credentials to a short-lived RAM-backed file for one command; and Linux `mount`
+presents profile credentials as read-only virtual files that are fetched again on every
+open. The broker service exposes a fixed set of local consumer operations over a Unix
+socket for clients that must use a credential without reading it. Temporary credential
+buffers and files are zeroed or removed when Parzival finishes with them.
 
 ## Status
 
-**Pre-1.0, pre-public-release. No tagged version has been cut.** The CLI and the broker
+**Pre-1.0 public prerelease. No tagged release has been cut yet.** The CLI and the broker
 service are both implemented and exercised against real deployments, not just designed:
 
 - `parzival get` streams a secret from OpenBao or 1Password to stdout or a file
@@ -37,11 +69,6 @@ service are both implemented and exercised against real deployments, not just de
   and `packaging/README.md` for the trust model and installation contract.
 - Linux packaging (RPM and DEB) is built and tested via GoReleaser; macOS ships the CLI
   only, as a Homebrew cask — there is no macOS broker/service package.
-
-The full design and phased roadmap live in the project's private planning documents.
-
-> Formerly *The Fisher King* / `tfk`; renamed to *Parzival* / `parzival` on 2026-07-12.
-> The Go module is `github.com/kevinpinscoe/parzival`.
 
 ## Installation
 
@@ -94,7 +121,7 @@ upstream code.
 
 | Item | Detail |
 | --- | --- |
-| Status | Pre-1.0, pre-public-release. CLI and broker are both implemented and deployed in real installs; no tagged version has been cut. |
+| Status | Pre-1.0 public prerelease. CLI and broker are both implemented and deployed in real installs; no tagged release has been cut yet. |
 | Secrets location | Encrypted stores: OpenBao, 1Password, gopass (planned), KeePassXC (planned). No plaintext secrets in this repo. |
 | Data classification | This repo contains source, packaging, and documentation only — never credentials. |
 | Production impact | Real, where deployed — parzival-broker runs as an unattended systemd service handling live credential requests once installed. |
@@ -433,8 +460,8 @@ contract — mode bypasses only — is relied on as a deployment gate.
 `policy grant` builds one allow-rule and owns the whole change:
 
 ```bash
-parzival policy grant --tool codex --goal "file YouTrack issues" \
-    --secret 'bao:app/YouTrack-Codex#token' --identity codex
+parzival policy grant --tool documentation-bot --goal "publish documentation" \
+    --secret 'bao:app/docs#token' --identity documentation-bot
 ```
 
 It computes where the rule belongs rather than appending it, shows the resulting
@@ -479,7 +506,6 @@ parzival/
 ├── THREAT-MODEL.md           # security model and consumer-attestation limits
 ├── SERVICE-PROTOCOL.md       # broker service protocol (implemented on Linux)
 ├── theory-of-operation-and-rationale.md   # how `get` works and why backends shell out
-├── why-did-i-call-it-the-parzival.md       # Fisher King motif → credential/workflow mapping
 ├── go.mod                    # Go module: github.com/kevinpinscoe/parzival
 ├── mise.toml                 # pinned toolchain (Go, markdownlint-cli2)
 ├── cmd/parzival/             # CLI entry point (get, probe, exec, mount, policy, doctor)
@@ -500,21 +526,6 @@ parzival/
     ├── broker/                # broker daemon implementing SERVICE-PROTOCOL.md
     └── mount/                # FUSE virtual credential files (Linux)
 ```
-
-## Why Parzival?
-
-This project takes its name from the Fisher King and Holy Grail tradition.
-
-In Arthurian legend, the mystery of the Grail often remains concealed until the right
-knight appears and, crucially, asks the right question or shows the right inner quality.
-Parzival in many versions initially fails because he does not ask what he should ask.
-The truth is not openly given; it is withheld until moral and spiritual fitness are
-established — much like a secret that is released only to a verified, approved caller.
-
-The Fisher King represents the infrastructure wounded by a leaked credential; Parzival
-is the agent that recognizes the danger and asks the healing question before the wound
-spreads. See [why-did-i-call-it-the-parzival.md](why-did-i-call-it-the-parzival.md) for
-the full motif-to-workflow mapping.
 
 ## Security
 
@@ -563,4 +574,5 @@ documentation; the table above is the public summary.
 ## License
 
 Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Created by Kevin P. Inscoe (kevin.inscoe@gmail.com).
 Copyright 2026 Kevin P. Inscoe.

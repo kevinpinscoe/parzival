@@ -1,14 +1,13 @@
-# Verification-only workflow for the private github.com/kevinpinscoe/parzival
-# mirror. It builds, tests,
-# and produces real release-shaped artifacts (archives, RPM/DEB, SBOM) for
-# inspection — it never signs, publishes, dispatches, or tags anything.
+# Verification-only workflow for github.com/kevinpinscoe/parzival, the
+# authoritative public repository. It builds, tests, and produces real
+# release-shaped artifacts (archives, RPM/DEB, SBOM) for inspection — it
+# never signs, publishes, dispatches, or tags anything.
 #
 # Deliberately requires NO secrets: no OpenBao, no signing credentials, no
 # Homebrew/RPM/APT tokens, no private deployment credentials. That is what
-# makes it safe to run on every push/PR while the mirror stays private, and
-# it stays true even once GitHub Actions eventually becomes the production
-# release CI — the production release.yml that gets built later is a
-# separate, additive workflow, not a loosened version of this one.
+# makes it safe to run on every push/PR regardless of who opened it — the
+# production release.yml that runs on a tag push is a separate, additive
+# workflow, not a loosened version of this one.
 #
 # Tool pinning follows the same house pattern already proven in production
 # by kevinpinscoe/get-wx and kevinpinscoe/metar-tool: actions pinned by full
