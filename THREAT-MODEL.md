@@ -515,6 +515,49 @@ the process table for the credential's entire lifetime) and any endpoint/address
 authenticates against should be pinned rather than environment-overridable, so a caller
 cannot redirect the flow to a host they control and harvest the credential in transit.
 
+**Terminal disclosure is a separate control from authorization, and needs its own allowlist.**
+Verifying a human is present decides whether a privileged operation may *execute*; it says
+nothing about whether that operation's *output* may be shown. A break-glass wrapper typically
+passes an arbitrary subcommand through to the underlying secrets CLI and inherits its stdout, so
+whatever that CLI prints — a policy body, or a freshly minted credential — reaches the terminal
+and the scrollback identically. The wrapper cannot tell them apart by inspection.
+
+The defensible shape is an **allowlist that fails closed**: only operations explicitly classified
+as producing non-secret output print their stdout; everything else still executes but has its
+output withheld. Two properties matter more than the list itself. First, classify by **exact
+command shape, not by top-level noun** — a subcommand added later under an otherwise-safe verb
+must default to blocked rather than inheriting its parent's classification. Second, provide **no
+escape hatch**: a flag or environment variable that restores raw output for an unclassified
+operation defeats the control precisely when it matters. A newly unsupported administrative
+command is an inconvenience; a newly introduced credential-returning command printing plaintext
+is a security failure.
+
+Note that several operations that *look* administrative return credential material: minting a
+SecretID for a role, creating a token, and initialising or unsealing a store all return live
+credentials, and looking up a token typically prints the token's own id.
+
+**Credential material must not be supplied on argv either**, and this is an independent exposure
+rather than a consequence of anything being printed: an argv element is visible host-wide through
+the process table for the life of the process, and is written to shell history. A wrapper that
+accepts `key=value` pairs should refuse a literal value wherever the value could be secret, and
+direct the caller to the CLI's stdin form instead.
+
+**Residual risk: plaintext in volatile process memory at the point of use.** A break-glass
+wrapper implemented as a shell script necessarily holds three values in ordinary, unexported
+shell variables — the AppRole SecretID it authenticates with, the login response, and the
+resulting token. They are never intentionally printed, tracing is disabled before any of them
+exists, and they are unset promptly after use. Being shell variables, the SecretID and the login
+response are **not** exposed through `/proc/<pid>/environ`; the token is deliberately placed in
+the environment of the single child process that needs it, and that child environment is the
+accepted residual exposure.
+
+Rewriting this portion in a compiled or interpreted language would move the plaintext from
+shell-managed memory to that runtime's managed memory. **It would not eliminate the fundamental
+fact that authentication requires the credential to exist in plaintext in volatile process memory
+at the point of use.** The requirement is therefore stated as: secrets must not be placed in
+argv, logs, terminal output, trace output, persistent files, or unnecessary environments;
+temporary plaintext in volatile process memory at the point of use is accepted.
+
 ## Summary of guarantees
 
 | Threat | Status |
@@ -527,6 +570,9 @@ cannot redirect the flow to a host they control and harvest the credential in tr
 | Approval policy (scoping + audit of requests) | ⚠️ advisory — self-asserted identity; scopes honest callers, not a same-uid adversary |
 | Raw `get` reaching an AI agent's transcript | ⚠️ partial — refused in a *detected* agent shell with no override; an unrecognised harness is not detected (§4b) |
 | **Client that must use a credential without reading it** | ⚠️ **defended on Linux** — the broker service mode of §4d, under its four stated assumptions; no macOS build yet |
+| Break-glass printing credential material to a terminal | ✅ defended — allowlisted, fail-closed terminal output; classify by exact command shape, no escape hatch |
+| Credential supplied on argv (process table, shell history) | ✅ defended — literal values refused where they could be secret; CLI stdin form instead |
+| Plaintext in volatile process memory at the point of use | ⚠️ accepted residual — inherent to authentication; a language change relocates it rather than removing it |
 | Root on the host | ❌ out of scope (needs hardware) |
 | Compromised store backend / stolen store token | ❌ out of scope (backend's responsibility) |
 | **Caller with its own path to the store** (ambient `BAO_TOKEN`, readable token file) | ❌ **every policy guarantee is void, and the bypass is unaudited** — see §6b |
