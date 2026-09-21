@@ -533,14 +533,35 @@ command is an inconvenience; a newly introduced credential-returning command pri
 is a security failure.
 
 Note that several operations that *look* administrative return credential material: minting a
-SecretID for a role, creating a token, and initialising or unsealing a store all return live
-credentials, and looking up a token typically prints the token's own id.
+SecretID for a role and creating a token both return live credentials, initialising a store
+returns credential material such as unseal or recovery shares and an initial root token
+(depending on configuration), and looking up a token typically prints the token's own id.
+Unsealing is a different case and worth distinguishing: it **consumes** an unseal-key share and
+reports seal status rather than minting anything. It is nonetheless sensitive from an argv
+perspective, because the share itself can be supplied as an argument.
 
 **Credential material must not be supplied on argv either**, and this is an independent exposure
-rather than a consequence of anything being printed: an argv element is visible host-wide through
-the process table for the life of the process, and is written to shell history. A wrapper that
-accepts `key=value` pairs should refuse a literal value wherever the value could be secret, and
-direct the caller to the CLI's stdin form instead.
+rather than a consequence of anything being printed: credential-bearing argv may be exposed
+through process inspection and, when entered interactively, may persist in shell history.
+
+A name-based rule is not sufficient here. A generic write accepts arbitrary backend data, so a
+wrapper cannot reliably decide whether a field is secret from a key name — `password` and `foo`
+are equally likely to hold one. The defensible rule is the same fail-closed shape as the output
+allowlist: **if the caller is supplying arbitrary data to a secrets backend through argv, refuse
+the literal form and require the CLI's stdin equivalent** (`key=-`, a file reference, or the
+whole request as JSON on stdin).
+
+`key=value` is also not the only exposure class. Credential material can be supplied
+**positionally** — an unseal-key share, a token to revoke or renew, a wrapping token to unwrap, a
+login value — and in **flag values**, where a flag naming a one-time passphrase or an explicit
+token id carries the credential rather than naming a thing. A wrapper should enumerate the
+credential-bearing shapes it supports and refuse each literal form, directing the caller to a
+non-argv input mechanism where the CLI offers one and refusing the operation outright where it
+does not.
+
+Such coverage is **enumerated rather than exhaustive**: a credential-bearing argv form introduced
+by a later CLI version matches nothing and would not be refused. That boundary should be stated
+rather than papered over.
 
 **Residual risk: plaintext in volatile process memory at the point of use.** A break-glass
 wrapper implemented as a shell script necessarily holds three values in ordinary, unexported
@@ -571,7 +592,7 @@ temporary plaintext in volatile process memory at the point of use is accepted.
 | Raw `get` reaching an AI agent's transcript | ⚠️ partial — refused in a *detected* agent shell with no override; an unrecognised harness is not detected (§4b) |
 | **Client that must use a credential without reading it** | ⚠️ **defended on Linux** — the broker service mode of §4d, under its four stated assumptions; no macOS build yet |
 | Break-glass printing credential material to a terminal | ✅ defended — allowlisted, fail-closed terminal output; classify by exact command shape, no escape hatch |
-| Credential supplied on argv (process table, shell history) | ✅ defended — literal values refused where they could be secret; CLI stdin form instead |
+| Credential supplied on argv (process inspection, shell history) | ⚠️ partial — literal forms refused for the *enumerated* credential-bearing shapes (arbitrary data to a secrets backend, positional credentials, credential-bearing flag values); a shape introduced by a later CLI version is not covered until it is added |
 | Plaintext in volatile process memory at the point of use | ⚠️ accepted residual — inherent to authentication; a language change relocates it rather than removing it |
 | Root on the host | ❌ out of scope (needs hardware) |
 | Compromised store backend / stolen store token | ❌ out of scope (backend's responsibility) |
