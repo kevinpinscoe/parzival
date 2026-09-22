@@ -515,6 +515,70 @@ the process table for the credential's entire lifetime) and any endpoint/address
 authenticates against should be pinned rather than environment-overridable, so a caller
 cannot redirect the flow to a host they control and harvest the credential in transit.
 
+**Terminal disclosure is a separate control from authorization, and needs its own allowlist.**
+Verifying a human is present decides whether a privileged operation may *execute*; it says
+nothing about whether that operation's *output* may be shown. A break-glass wrapper typically
+passes an arbitrary subcommand through to the underlying secrets CLI and inherits its stdout, so
+whatever that CLI prints — a policy body, or a freshly minted credential — reaches the terminal
+and the scrollback identically. The wrapper cannot tell them apart by inspection.
+
+The defensible shape is an **allowlist that fails closed**: only operations explicitly classified
+as producing non-secret output print their stdout; everything else still executes but has its
+output withheld. Two properties matter more than the list itself. First, classify by **exact
+command shape, not by top-level noun** — a subcommand added later under an otherwise-safe verb
+must default to blocked rather than inheriting its parent's classification. Second, provide **no
+escape hatch**: a flag or environment variable that restores raw output for an unclassified
+operation defeats the control precisely when it matters. A newly unsupported administrative
+command is an inconvenience; a newly introduced credential-returning command printing plaintext
+is a security failure.
+
+Note that several operations that *look* administrative return credential material: minting a
+SecretID for a role and creating a token both return live credentials, initialising a store
+returns credential material such as unseal or recovery shares and an initial root token
+(depending on configuration), and looking up a token typically prints the token's own id.
+Unsealing is a different case and worth distinguishing: it **consumes** an unseal-key share and
+reports seal status rather than minting anything. It is nonetheless sensitive from an argv
+perspective, because the share itself can be supplied as an argument.
+
+**Credential material must not be supplied on argv either**, and this is an independent exposure
+rather than a consequence of anything being printed: credential-bearing argv may be exposed
+through process inspection and, when entered interactively, may persist in shell history.
+
+A name-based rule is not sufficient here. A generic write accepts arbitrary backend data, so a
+wrapper cannot reliably decide whether a field is secret from a key name — `password` and `foo`
+are equally likely to hold one. The defensible rule is the same fail-closed shape as the output
+allowlist: **if the caller is supplying arbitrary data to a secrets backend through argv, refuse
+the literal form and require the CLI's stdin equivalent** (`key=-`, a file reference, or the
+whole request as JSON on stdin).
+
+`key=value` is also not the only exposure class. Credential material can be supplied
+**positionally** — an unseal-key share, a token to revoke or renew, a wrapping token to unwrap, a
+login value — and in **flag values**, where a flag naming a one-time passphrase or an explicit
+token id carries the credential rather than naming a thing. A wrapper should enumerate the
+credential-bearing shapes it supports and refuse each literal form, directing the caller to a
+non-argv input mechanism where the CLI offers one and refusing the operation outright where it
+does not.
+
+Such coverage is **enumerated rather than exhaustive**: a credential-bearing argv form introduced
+by a later CLI version matches nothing and would not be refused. That boundary should be stated
+rather than papered over.
+
+**Residual risk: plaintext in volatile process memory at the point of use.** A break-glass
+wrapper implemented as a shell script necessarily holds three values in ordinary, unexported
+shell variables — the AppRole SecretID it authenticates with, the login response, and the
+resulting token. They are never intentionally printed, tracing is disabled before any of them
+exists, and they are unset promptly after use. Being shell variables, the SecretID and the login
+response are **not** exposed through `/proc/<pid>/environ`; the token is deliberately placed in
+the environment of the single child process that needs it, and that child environment is the
+accepted residual exposure.
+
+Rewriting this portion in a compiled or interpreted language would move the plaintext from
+shell-managed memory to that runtime's managed memory. **It would not eliminate the fundamental
+fact that authentication requires the credential to exist in plaintext in volatile process memory
+at the point of use.** The requirement is therefore stated as: secrets must not be placed in
+argv, logs, terminal output, trace output, persistent files, or unnecessary environments;
+temporary plaintext in volatile process memory at the point of use is accepted.
+
 ## Summary of guarantees
 
 | Threat | Status |
@@ -527,6 +591,9 @@ cannot redirect the flow to a host they control and harvest the credential in tr
 | Approval policy (scoping + audit of requests) | ⚠️ advisory — self-asserted identity; scopes honest callers, not a same-uid adversary |
 | Raw `get` reaching an AI agent's transcript | ⚠️ partial — refused in a *detected* agent shell with no override; an unrecognised harness is not detected (§4b) |
 | **Client that must use a credential without reading it** | ⚠️ **defended on Linux** — the broker service mode of §4d, under its four stated assumptions; no macOS build yet |
+| Break-glass printing credential material to a terminal | ✅ defended — allowlisted, fail-closed terminal output; classify by exact command shape, no escape hatch |
+| Credential supplied on argv (process inspection, shell history) | ⚠️ partial — literal forms refused for the *enumerated* credential-bearing shapes (arbitrary data to a secrets backend, positional credentials, credential-bearing flag values); a shape introduced by a later CLI version is not covered until it is added |
+| Plaintext in volatile process memory at the point of use | ⚠️ accepted residual — inherent to authentication; a language change relocates it rather than removing it |
 | Root on the host | ❌ out of scope (needs hardware) |
 | Compromised store backend / stolen store token | ❌ out of scope (backend's responsibility) |
 | **Caller with its own path to the store** (ambient `BAO_TOKEN`, readable token file) | ❌ **every policy guarantee is void, and the bypass is unaudited** — see §6b |
