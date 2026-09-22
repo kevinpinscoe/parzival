@@ -74,6 +74,9 @@ var adoptOutcomes = map[string]adoptOutcome{
 	"conflict": {written: &adoptFalse, matches: &adoptFalse},
 	// Created, but the read-back differs from the live token: an alarm.
 	"write_mismatch": {written: &adoptTrue, matches: &adoptFalse},
+	// Created, but the read-back could not be performed (a window granting
+	// create without read, or OpenBao failing mid-operation): unverified.
+	"write_unverified": {written: &adoptTrue, matchesNull: true},
 	// Refusals and failures: no comparison was completed.
 	"window_closed":       {written: &adoptFalse, matchesNull: true},
 	"not_found":           {written: &adoptFalse, matchesNull: true},

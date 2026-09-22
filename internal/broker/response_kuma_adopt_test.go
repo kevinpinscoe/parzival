@@ -26,6 +26,7 @@ func TestKumaAdoptAcceptsEveryCoherentOutcome(t *testing.T) {
 		{"already_adopted", false, "true"},
 		{"conflict", false, "false"},
 		{"write_mismatch", true, "false"},
+		{"write_unverified", true, "null"},
 		{"window_closed", false, "null"},
 		{"not_found", false, "null"},
 		{"not_push", false, "null"},
@@ -58,15 +59,17 @@ func TestKumaAdoptRejectsIncoherentOutcomes(t *testing.T) {
 		written bool
 		matches string
 	}{
-		{"adopted", false, "true"},        // adopted without a write
-		{"adopted", true, "false"},        // adopted but not equal
-		{"already_adopted", true, "true"}, // "already" but wrote
-		{"conflict", true, "false"},       // a conflict must never write
-		{"conflict", false, "true"},       // a conflict cannot match
-		{"write_mismatch", true, "true"},  // mismatch that matches
-		{"window_closed", false, "true"},  // no comparison happened
-		{"window_closed", true, "null"},   // refusal that wrote
-		{"not_found", false, "false"},     // null required, not false
+		{"adopted", false, "true"},          // adopted without a write
+		{"adopted", true, "false"},          // adopted but not equal
+		{"already_adopted", true, "true"},   // "already" but wrote
+		{"conflict", true, "false"},         // a conflict must never write
+		{"conflict", false, "true"},         // a conflict cannot match
+		{"write_mismatch", true, "true"},    // mismatch that matches
+		{"window_closed", false, "true"},    // no comparison happened
+		{"window_closed", true, "null"},     // refusal that wrote
+		{"not_found", false, "false"},       // null required, not false
+		{"write_unverified", false, "null"}, // unverified implies a write
+		{"write_unverified", true, "true"},  // unverified cannot claim a match
 	}
 	for _, c := range bad {
 		if _, err := canonicalizeKumaAdoptPushAdopt(adoptResp(c.result, c.written, c.matches)); err == nil {
