@@ -489,7 +489,7 @@ Token, stored at a path dedicated to the broker — **never** whatever path an i
 ### Verifying the broker
 
 ```bash
-parzival service tea.repos-list --input owner=<a-gitea-owner>
+parzival service --input owner=<a-gitea-owner> tea.repos-list
 ```
 
 run as a uid that is both a member of `parzival-clients` (reachability) **and** granted
@@ -521,7 +521,7 @@ design (see [README.md](README.md) for why, and why there is deliberately no ove
 If a broker is installed, also run its own health check:
 
 ```bash
-parzival service tea.repos-list --input owner=<a-gitea-owner>
+parzival service --input owner=<a-gitea-owner> tea.repos-list
 ```
 
 ## Troubleshooting

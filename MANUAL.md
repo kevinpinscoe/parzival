@@ -553,10 +553,13 @@ else.
 | The client | The regular `parzival` binary | Nothing extra to install — `service` is a subcommand of the same binary `get`/`exec` already live in |
 
 ```bash
-parzival service tea.repos-list --input owner=acme
+parzival service --input owner=acme tea.repos-list
 ```
 
-`--input name=value` is repeatable, for operations that take more than one input. On
+`--input name=value` is repeatable, for operations that take more than one input, and every
+`--input` must come **before** the operation name: flag parsing stops at the first positional
+argument, so a trailing `--input` is treated as an extra operation and refused
+(`service requires exactly one operation reference … (got 3)`). On
 success, the broker's canonicalized JSON result prints to stdout and the command exits
 `0`. On anything else, a short, non-sensitive message prints to stderr and the exit
 code names which of the broker's closed statuses happened:
