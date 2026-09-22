@@ -2,6 +2,7 @@ package broker
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -71,5 +72,38 @@ func TestCanonicalizeKumaPushMintCannotCarryACredentialField(t *testing.T) {
 func TestResponseValidatorsRegistersKumaPushMint(t *testing.T) {
 	if _, ok := responseValidators["kuma.push-mint"]; !ok {
 		t.Fatal("responseValidators: \"kuma.push-mint\" is not registered")
+	}
+}
+
+func TestCanonicalizeKumaPushMintAcceptsPermissionDenied(t *testing.T) {
+	got, err := canonicalizeKumaPushMint([]byte(`{"created":false,"reason":"permission_denied"}`))
+	if err != nil {
+		t.Fatalf("canonicalizeKumaPushMint: unexpected error: %v", err)
+	}
+	if string(got) != `{"created":false,"reason":"permission_denied"}` {
+		t.Errorf("canonicalizeKumaPushMint: got %s", got)
+	}
+}
+
+// KO-60: reason is a closed set, and the two forms cannot be mixed.
+func TestCanonicalizeKumaPushMintRejectsIncoherentOrUnknownForms(t *testing.T) {
+	for _, raw := range []string{
+		`{"created":false,"reason":"hvs.SENTINELtoken"}`,
+		`{"created":false,"reason":""}`,
+		`{"created":false}`,
+		`{"created":false,"reason":"already_exists","push_url":"https://x/api/push/abc"}`,
+		`{"created":true}`,
+		`{"created":true,"push_url":"https://x/api/push/abc","reason":"already_exists"}`,
+		`{"created":true,"push_url":"hvs.SENTINELtoken"}`,
+		`{"created":true,"push_url":"http://x/api/push/abc"}`,
+	} {
+		_, err := canonicalizeKumaPushMint([]byte(raw))
+		if err == nil {
+			t.Errorf("%s: expected refusal, got none", raw)
+			continue
+		}
+		if strings.Contains(err.Error(), "SENTINEL") {
+			t.Errorf("%s: error leaks the value: %v", raw, err)
+		}
 	}
 }
