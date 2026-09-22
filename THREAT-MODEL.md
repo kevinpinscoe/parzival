@@ -20,6 +20,22 @@ Every claim below is bounded by that truth. `parzival` shrinks the exposure wind
 number of copies; it cannot make a secret usable without also making it stealable by
 anyone who already controls the point of use.
 
+## The disclosure invariant
+
+A secret-handling operation must satisfy **all three** conditions:
+
+1. the secret is **never disclosed** to the human or to the invoking agent;
+2. it **never crosses an observable intermediary**: stdout/stderr, command-line arguments,
+   environment variables, shell variables, shell history, or the clipboard;
+3. any resulting output exposed to the caller contains **only non-secret status or metadata**.
+
+Where a secret must move between systems, Parzival, or the trusted helper acting for it, performs
+that transfer **directly**, rather than returning the secret for the caller to carry.
+
+This does not contradict *The core truth* above: the consuming tool still needs plaintext at the
+point of use. The invariant governs everything *around* that point — how the secret gets there,
+and what the caller who asked for it can see.
+
 ## Assets
 
 | Asset | Where it lives | Why it matters |
