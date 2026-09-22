@@ -187,7 +187,7 @@ service:
   never touches the store — the broker on the other end of the socket
   enforces the boundary; this is just a client of it. --input is repeatable:
 
-    parzival service tea.repos-list --input owner=acme
+    parzival service --input owner=acme tea.repos-list
 
   Exit codes: 0 OK, 3 DENIED, 4 INVALID, 5 ERROR, 6 UNAVAILABLE (the broker's
   closed status vocabulary), 1 for anything else (the broker was not
