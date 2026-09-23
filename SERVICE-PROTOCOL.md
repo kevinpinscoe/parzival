@@ -238,6 +238,9 @@ narrow enough could otherwise be used as an oracle.
 11. Capture stdout to the response bound, validate and canonicalize it against the declared
     response shape (never a raw passthrough of consumer stdout), and discard stderr to the
     broker's own log — its content, never captured, only its length and the exit status.
+    Where a validator needs deployment facts (an exact expected origin, for example), they
+    come from the operation's `response_config` in the root-owned consumer definition,
+    checked once at startup, and never from the request.
 12. Zero and remove the rendered file and the runtime directory. This runs **before** the
     response is built and sent (see "Audit", below, for why write ordering here matters too).
 13. Write the response and close the connection.

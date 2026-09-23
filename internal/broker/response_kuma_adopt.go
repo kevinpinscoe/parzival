@@ -6,8 +6,8 @@ import (
 )
 
 // kumaAdoptPushAdoptResult is the declared response shape of the
-// kuma-adopt.push-adopt helper (parzival-k-fed-config's
-// hosts/fldw/parzival-broker/kuma-push-adopt.py). The helper copies an
+// kuma-adopt.push-adopt helper (a deployment's own executable; the product
+// ships none). The helper copies an
 // EXISTING Uptime Kuma push token into OpenBao, or proves the copy already
 // there equals the live token. It never returns the token or anything
 // derived from it.
@@ -22,7 +22,7 @@ import (
 // material back to the client. The client already knows the monitor ID and
 // slug it supplied. Echoing them back could prove only syntax, never
 // equality with what was sent, so the first version's monitor_id and slug
-// were removed (KO-60 follow-up).
+// were removed.
 //
 // Like kuma.push-mint's and woodpecker.repo-secret-set's validators, every
 // field is decoded AND checked against a closed set. The fields are not
@@ -72,7 +72,7 @@ var (
 	adoptFalse = false
 )
 
-// adoptOutcomes must stay in step with RESULTS in kuma-push-adopt.py.
+// adoptOutcomes must stay in step with the helper's own result table.
 var adoptOutcomes = map[string]adoptOutcome{
 	// A new OpenBao entry was created and read back equal to the live token.
 	"adopted": {written: &adoptTrue, matches: &adoptTrue},

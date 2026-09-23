@@ -130,7 +130,7 @@ func TestKumaAdoptRejectsTheRemovedEchoFields(t *testing.T) {
 // Every way a faulty helper could try to hand token material back. With no
 // free-form string or numeric field in the shape, each must be refused.
 func TestKumaAdoptCannotCarryTokenMaterial(t *testing.T) {
-	url := "https://uptime.kevininscoe.com/api/push/" + adoptSentinel
+	url := "https://uptime.example.test/api/push/" + adoptSentinel
 	const ok = `"result":"adopted","openbao_written":true,"stored_matches_live":true`
 	attempts := []string{
 		// extra fields of every JSON type

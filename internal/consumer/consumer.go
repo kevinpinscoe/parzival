@@ -87,7 +87,22 @@ type Operation struct {
 	Response string `json:"response"`
 	// TimeoutSeconds bounds the operation. 0 means the broker's default.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+	// ResponseConfig is trusted, administrator-owned configuration for this
+	// operation's response validator: deployment facts the approved response
+	// must be checked against, such as the exact origin a returned URL must
+	// have. They belong to the deployment, not the product, so they live here
+	// in the root-owned definition rather than compiled into the binary. They
+	// are read only from this file and never from a client request. The
+	// validator registered for the operation declares which keys it requires
+	// and what values are valid; the broker refuses to start on a missing,
+	// unknown or invalid key, and on configuration given to an operation whose
+	// validator takes none.
+	ResponseConfig map[string]string `json:"response_config,omitempty"`
 }
+
+// maxResponseConfigValue bounds one response_config value in bytes. These are
+// short deployment facts (an origin, an identifier), not documents.
+const maxResponseConfigValue = 1024
 
 // Input constrains one client-supplied value.
 type Input struct {
@@ -289,6 +304,23 @@ func (op *Operation) validate() error {
 	}
 	if op.TimeoutSeconds < 0 {
 		return fmt.Errorf("timeout_seconds %d must not be negative", op.TimeoutSeconds)
+	}
+	for _, key := range sortedKeys(op.ResponseConfig) {
+		if !validName(key) {
+			return fmt.Errorf("response_config key %q must match %s", key, nameRE)
+		}
+		v := op.ResponseConfig[key]
+		if v == "" {
+			return fmt.Errorf("response_config %q must not be empty", key)
+		}
+		if len(v) > maxResponseConfigValue {
+			return fmt.Errorf("response_config %q is longer than %d bytes", key, maxResponseConfigValue)
+		}
+		for _, r := range v {
+			if r < 0x20 || r == 0x7f {
+				return fmt.Errorf("response_config %q contains a control character", key)
+			}
+		}
 	}
 	for inName := range op.Inputs {
 		if !validName(inName) {
