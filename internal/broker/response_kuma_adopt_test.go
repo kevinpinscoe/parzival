@@ -6,13 +6,12 @@ import (
 	"testing"
 )
 
-// A plausible push token and URL. None of these may ever survive
-// canonicalization in any form.
+// A plausible push token. It must never survive canonicalization in any form.
 const adoptSentinel = "SENTINELtok9Qz"
 
 func adoptResp(result string, written bool, matches string) []byte {
-	return []byte(`{"result":"` + result + `","monitor_id":89,"slug":"container-crashloop",` +
-		`"openbao_written":` + map[bool]string{true: "true", false: "false"}[written] +
+	return []byte(`{"result":"` + result + `","openbao_written":` +
+		map[bool]string{true: "true", false: "false"}[written] +
 		`,"stored_matches_live":` + matches + `}`)
 }
 
@@ -47,9 +46,17 @@ func TestKumaAdoptAcceptsEveryCoherentOutcome(t *testing.T) {
 		if err := json.Unmarshal(got, &m); err != nil {
 			t.Fatalf("canonical output did not re-decode: %v", err)
 		}
-		if len(m) != 5 || m["result"] != c.result || m["slug"] != "container-crashloop" {
+		if len(m) != 3 || m["result"] != c.result || m["openbao_written"] != c.written {
 			t.Errorf("%s: canonical output wrong: %s", c.result, got)
 		}
+	}
+}
+
+// Every outcome in the table is covered above, so a new enum value cannot be
+// added without a coherence test.
+func TestKumaAdoptOutcomeTableIsFullyTested(t *testing.T) {
+	if len(adoptOutcomes) != 13 {
+		t.Fatalf("adoptOutcomes has %d entries; update the tests alongside it", len(adoptOutcomes))
 	}
 }
 
@@ -65,11 +72,11 @@ func TestKumaAdoptRejectsIncoherentOutcomes(t *testing.T) {
 		{"conflict", true, "false"},         // a conflict must never write
 		{"conflict", false, "true"},         // a conflict cannot match
 		{"write_mismatch", true, "true"},    // mismatch that matches
+		{"write_unverified", false, "null"}, // unverified implies a write
+		{"write_unverified", true, "true"},  // unverified cannot claim a match
 		{"window_closed", false, "true"},    // no comparison happened
 		{"window_closed", true, "null"},     // refusal that wrote
 		{"not_found", false, "false"},       // null required, not false
-		{"write_unverified", false, "null"}, // unverified implies a write
-		{"write_unverified", true, "true"},  // unverified cannot claim a match
 	}
 	for _, c := range bad {
 		if _, err := canonicalizeKumaAdoptPushAdopt(adoptResp(c.result, c.written, c.matches)); err == nil {
@@ -85,14 +92,14 @@ func TestKumaAdoptRejectsUnknownResult(t *testing.T) {
 }
 
 func TestKumaAdoptRejectsMissingFields(t *testing.T) {
-	// Both a comparing result and a null-comparison result: for the latter, an
+	// A comparing result and a null-comparison result: for the latter, an
 	// absent stored_matches_live would otherwise be indistinguishable from null.
 	bases := [][]byte{
 		adoptResp("already_adopted", false, "true"),
 		adoptResp("window_closed", false, "null"),
 	}
 	for _, base := range bases {
-		for _, drop := range []string{"result", "monitor_id", "slug", "openbao_written", "stored_matches_live"} {
+		for _, drop := range []string{"result", "openbao_written", "stored_matches_live"} {
 			var m map[string]json.RawMessage
 			_ = json.Unmarshal(base, &m)
 			delete(m, drop)
@@ -104,24 +111,46 @@ func TestKumaAdoptRejectsMissingFields(t *testing.T) {
 	}
 }
 
-// Every way a faulty helper could try to hand the token back to the client.
+// The removed monitor_id and slug fields are now unknown fields: a helper
+// still sending them is refused, so neither can become a free-form channel
+// again by accident.
+func TestKumaAdoptRejectsTheRemovedEchoFields(t *testing.T) {
+	for _, extra := range []string{
+		`"monitor_id":89`,
+		`"slug":"container-crashloop"`,
+		`"monitor_id":89,"slug":"container-crashloop"`,
+	} {
+		raw := `{"result":"already_adopted","openbao_written":false,"stored_matches_live":true,` + extra + `}`
+		if _, err := canonicalizeKumaAdoptPushAdopt([]byte(raw)); err == nil {
+			t.Errorf("%s: expected refusal of a removed field", extra)
+		}
+	}
+}
+
+// Every way a faulty helper could try to hand token material back. With no
+// free-form string or numeric field in the shape, each must be refused.
 func TestKumaAdoptCannotCarryTokenMaterial(t *testing.T) {
-	url := "https://uptime.kevininscoe.com/api/push/" + adoptSentinel
+	url := "https://uptime.example.test/api/push/" + adoptSentinel
+	const ok = `"result":"adopted","openbao_written":true,"stored_matches_live":true`
 	attempts := []string{
-		// extra fields
-		`{"result":"adopted","monitor_id":89,"slug":"x","openbao_written":true,"stored_matches_live":true,"push_url":"` + url + `"}`,
-		`{"result":"adopted","monitor_id":89,"slug":"x","openbao_written":true,"stored_matches_live":true,"token":"` + adoptSentinel + `"}`,
-		`{"result":"adopted","monitor_id":89,"slug":"x","openbao_written":true,"stored_matches_live":true,"fingerprint":"ab12"}`,
-		// token smuggled through the string fields
-		`{"result":"` + adoptSentinel + `","monitor_id":89,"slug":"x","openbao_written":false,"stored_matches_live":null}`,
-		`{"result":"adopted","monitor_id":89,"slug":"` + url + `","openbao_written":true,"stored_matches_live":true}`,
-		`{"result":"adopted","monitor_id":89,"slug":"` + strings.ToLower(adoptSentinel) + `-` + strings.Repeat("a", 60) + `","openbao_written":true,"stored_matches_live":true}`,
-		// wrong types
-		`{"result":"adopted","monitor_id":"` + adoptSentinel + `","slug":"x","openbao_written":true,"stored_matches_live":true}`,
-		`{"result":"adopted","monitor_id":89,"slug":"x","openbao_written":"` + adoptSentinel + `","stored_matches_live":true}`,
-		`{"result":"adopted","monitor_id":89,"slug":"x","openbao_written":true,"stored_matches_live":"` + adoptSentinel + `"}`,
+		// extra fields of every JSON type
+		`{` + ok + `,"push_url":"` + url + `"}`,
+		`{` + ok + `,"token":"` + adoptSentinel + `"}`,
+		`{` + ok + `,"fingerprint":"ab12"}`,
+		`{` + ok + `,"token_length":20}`,
+		`{` + ok + `,"detail":{"t":"` + adoptSentinel + `"}}`,
+		`{` + ok + `,"n":[1,2,3]}`,
+		// smuggled through the one string field
+		`{"result":"` + adoptSentinel + `","openbao_written":false,"stored_matches_live":null}`,
+		`{"result":"adopted ` + adoptSentinel + `","openbao_written":true,"stored_matches_live":true}`,
+		// wrong types for the booleans
+		`{"result":"adopted","openbao_written":"` + adoptSentinel + `","stored_matches_live":true}`,
+		`{"result":"adopted","openbao_written":1,"stored_matches_live":true}`,
+		`{"result":"adopted","openbao_written":true,"stored_matches_live":"` + adoptSentinel + `"}`,
+		`{"result":"adopted","openbao_written":true,"stored_matches_live":20}`,
 		// trailing data
-		`{"result":"adopted","monitor_id":89,"slug":"x","openbao_written":true,"stored_matches_live":true}` + adoptSentinel,
+		`{` + ok + `}` + adoptSentinel,
+		`{` + ok + `}{"token":"` + adoptSentinel + `"}`,
 	}
 	for i, raw := range attempts {
 		got, err := canonicalizeKumaAdoptPushAdopt([]byte(raw))
@@ -129,18 +158,22 @@ func TestKumaAdoptCannotCarryTokenMaterial(t *testing.T) {
 			t.Errorf("attempt %d: expected refusal, got %s", i, got)
 			continue
 		}
-		if strings.Contains(err.Error(), adoptSentinel) || strings.Contains(strings.ToLower(err.Error()), strings.ToLower(adoptSentinel)) {
+		if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(adoptSentinel)) {
 			t.Errorf("attempt %d: error message leaks the sentinel: %v", i, err)
 		}
 	}
 }
 
-func TestKumaAdoptRejectsOutOfRangeMonitorID(t *testing.T) {
-	for _, id := range []string{"0", "-1", "1000000000", "1.5", "99999999999999999999"} {
-		raw := `{"result":"not_found","monitor_id":` + id + `,"slug":"x","openbao_written":false,"stored_matches_live":null}`
-		if _, err := canonicalizeKumaAdoptPushAdopt([]byte(raw)); err == nil {
-			t.Errorf("monitor_id %s: expected refusal", id)
-		}
+// The canonical output is re-marshalled from the approved struct, so it has
+// exactly three keys whatever the helper's key order or spacing.
+func TestKumaAdoptCanonicalIsFresh(t *testing.T) {
+	got, err := canonicalizeKumaAdoptPushAdopt([]byte(
+		"{ \"stored_matches_live\" : null ,\n \"openbao_written\":false, \"result\":\"window_closed\" }"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(got) != `{"result":"window_closed","openbao_written":false,"stored_matches_live":null}` {
+		t.Errorf("canonical output not freshly marshalled: %s", got)
 	}
 }
 

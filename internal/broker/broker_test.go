@@ -165,3 +165,72 @@ func TestNewServerRefusesOnOperationWithNoResponseValidator(t *testing.T) {
 		t.Fatal("newServer: expected refusal for a declared operation with no registered response validator, got none")
 	}
 }
+
+// kumaStartupEnv writes a consumer definition declaring kuma.push-mint with
+// the given operation JSON fragment appended, and returns the authz path.
+func kumaStartupEnv(t *testing.T, extra string) string {
+	t.Helper()
+	configHome := t.TempDir()
+	t.Setenv("PARZIVAL_CONFIG_HOME", configHome)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	consumersDir := filepath.Join(configHome, "consumers")
+	profilesDir := filepath.Join(configHome, "profiles")
+	mkdirAll(t, consumersDir)
+	mkdirAll(t, profilesDir)
+	writeFile(t, filepath.Join(consumersDir, "kuma.json"), `{
+	  "schema": 1, "name": "kuma", "executable": "`+fakeTeaPath+`", "profile": "tea",
+	  "operations": {"push-mint": {"argv": ["x"], "response": "json"`+extra+`}}
+	}`)
+	writeFile(t, filepath.Join(profilesDir, "tea.json"), testProfileJSON)
+	authzPath := filepath.Join(t.TempDir(), "authz.json")
+	writeFile(t, authzPath, `{"schema":1,"entries":[{"uid":1000,"operations":["kuma.push-mint"]}]}`)
+	return authzPath
+}
+
+func TestNewServerStartsWithValidResponseConfig(t *testing.T) {
+	authzPath := kumaStartupEnv(t, `, "response_config": {"push_origin": "https://uptime.example.test"}`)
+	if err := newFailingServer(t, authzPath, noopVerify); err != nil {
+		t.Fatalf("newServer: valid response_config refused: %v", err)
+	}
+}
+
+func TestNewServerRefusesOnMissingOrInvalidResponseConfig(t *testing.T) {
+	for name, extra := range map[string]string{
+		"missing":     ``,
+		"unknown key": `, "response_config": {"push_origin": "https://uptime.example.test", "x": "y"}`,
+		"http origin": `, "response_config": {"push_origin": "http://uptime.example.test"}`,
+		"with path":   `, "response_config": {"push_origin": "https://uptime.example.test/api"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			authzPath := kumaStartupEnv(t, extra)
+			err := newFailingServer(t, authzPath, noopVerify)
+			if err == nil {
+				t.Fatal("newServer: expected refusal, got none")
+			}
+			if !strings.Contains(err.Error(), "response_config") {
+				t.Errorf("refusal does not name response_config: %v", err)
+			}
+		})
+	}
+}
+
+func TestNewServerRefusesResponseConfigOnPlainValidator(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("PARZIVAL_CONFIG_HOME", configHome)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	consumersDir := filepath.Join(configHome, "consumers")
+	profilesDir := filepath.Join(configHome, "profiles")
+	mkdirAll(t, consumersDir)
+	mkdirAll(t, profilesDir)
+	writeFile(t, filepath.Join(consumersDir, "tea.json"), `{
+	  "schema": 1, "name": "tea", "executable": "`+fakeTeaPath+`", "profile": "tea",
+	  "operations": {"repos-list": {"argv": ["x"], "response": "json",
+	    "response_config": {"push_origin": "https://uptime.example.test"}}}
+	}`)
+	writeFile(t, filepath.Join(profilesDir, "tea.json"), testProfileJSON)
+	authzPath := filepath.Join(t.TempDir(), "authz.json")
+	writeFile(t, authzPath, `{"schema":1,"entries":[{"uid":1000,"operations":["tea.repos-list"]}]}`)
+	if err := newFailingServer(t, authzPath, noopVerify); err == nil {
+		t.Fatal("newServer: response_config on an operation whose validator takes none was accepted")
+	}
+}

@@ -217,10 +217,11 @@ func classify(name string, op consumer.Operation, result *launchResult) *Respons
 	if result.truncated {
 		return respResultTooLarge()
 	}
-	validator, ok := responseValidators[name]
-	if !ok {
+	validator, err := validatorFor(name, op)
+	if err != nil {
 		// Unreachable in practice: New refuses to start if any declared
-		// operation lacks a registered validator. Treated as a consumer
+		// operation lacks a registered validator or carries response_config
+		// that validator does not accept. Treated as a consumer
 		// failure rather than a panic, for the same "fail closed, not
 		// loudly broken" reasoning as the rest of this file.
 		return respConsumerFailed()

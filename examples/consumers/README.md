@@ -31,6 +31,22 @@ Each operation declares an `argv` vector with `${name}` placeholders, the `input
 placeholders may be filled from, and the `response` shape (`json` or `text`) its stdout is
 validated against.
 
+An operation may also carry `response_config`: a small map of trusted, deployment-specific
+strings its response validator needs, such as the exact origin a returned URL must have.
+These are facts about your deployment, not the product, so they live in this root-owned
+file instead of being compiled into `parzival-broker`. A client can never supply or change
+them. Each validator declares the exact keys it requires and checks their values. The broker
+refuses to start on a missing, unknown or invalid key, and on `response_config` given to an
+operation whose validator takes none. For example, `kuma.push-mint` requires:
+
+```json
+"response_config": { "push_origin": "https://uptime.example.test" }
+```
+
+That is a bare HTTPS origin in canonical form: lowercase, an optional explicit port, and no
+path, slash, query or fragment. A returned `push_url` must then be exactly
+`<push_origin>/api/push/<32 lowercase hex>`.
+
 Each input declares a `pattern`, and optionally `max_length`, `optional`, and
 `allow_leading_dash`. Three things about inputs are worth knowing before writing one:
 

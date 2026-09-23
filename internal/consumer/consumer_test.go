@@ -497,3 +497,29 @@ func TestLoadAllRejectsAnInvalidDefinitionInTheDirectory(t *testing.T) {
 		t.Fatal("LoadAll: expected an error for an invalid definition, got none")
 	}
 }
+
+func responseConfigDef(cfg string) string {
+	return `{"schema":1,"name":"kuma","executable":"/usr/libexec/x","profile":"p",
+	  "operations":{"push-mint":{"argv":["x"],"response":"json","response_config":` + cfg + `}}}`
+}
+
+func TestParseAcceptsResponseConfig(t *testing.T) {
+	d := mustParse(t, responseConfigDef(`{"push_origin":"https://uptime.example.test"}`))
+	if got := d.Operations["push-mint"].ResponseConfig["push_origin"]; got != "https://uptime.example.test" {
+		t.Errorf("response_config not loaded: %q", got)
+	}
+}
+
+func TestParseRejectsBadResponseConfig(t *testing.T) {
+	for name, cfg := range map[string]string{
+		"bad key":         `{"Push Origin":"https://x.example.test"}`,
+		"empty value":     `{"push_origin":""}`,
+		"control char":    `{"push_origin":"https://x.example.test\n"}`,
+		"oversized value": `{"push_origin":"` + strings.Repeat("a", maxResponseConfigValue+1) + `"}`,
+		"non-string":      `{"push_origin":1}`,
+	} {
+		if _, err := Parse([]byte(responseConfigDef(cfg)), "test.json"); err == nil {
+			t.Errorf("%s: expected refusal", name)
+		}
+	}
+}

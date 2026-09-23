@@ -200,10 +200,10 @@ func newServer(
 		if err := verify(def.Executable, cfg.TrustedOwnerUID); err != nil {
 			return nil, fmt.Errorf("broker startup: consumer %q executable: %w", name, err)
 		}
-		for opName := range def.Operations {
+		for opName, op := range def.Operations {
 			key := name + "." + opName
-			if _, ok := responseValidators[key]; !ok {
-				return nil, fmt.Errorf("broker startup: consumer %q operation %q has no approved response validator", name, opName)
+			if _, err := validatorFor(key, op); err != nil {
+				return nil, fmt.Errorf("broker startup: consumer %q operation %q %w", name, opName, err)
 			}
 		}
 	}

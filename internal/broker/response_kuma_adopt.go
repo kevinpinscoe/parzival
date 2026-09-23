@@ -3,33 +3,40 @@ package broker
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
 )
 
 // kumaAdoptPushAdoptResult is the declared response shape of the
-// kuma-adopt.push-adopt helper (parzival-k-fed-config's
-// hosts/fldw/parzival-broker/kuma-push-adopt.py). The helper copies an
+// kuma-adopt.push-adopt helper (a deployment's own executable; the product
+// ships none). The helper copies an
 // EXISTING Uptime Kuma push token into OpenBao, or proves the copy already
-// there equals the live token. It never returns the token, a URL, a hash, a
-// fingerprint, or anything derived from the token.
+// there equals the live token. It never returns the token or anything
+// derived from it.
 //
-// This is stricter than kuma.push-mint's validator, which accepts any
-// string in `reason`, and it follows woodpecker.repo-secret-set's rule:
-// every field is decoded AND checked against a closed set. It goes one step
-// further than that validator because the fields are not independent:
+// The response is deliberately a closed enum plus two booleans, and nothing
+// else:
 //
-//   - every key is required. Pointer fields make a missing key detectable,
-//     where a plain field would silently decode it as its zero value.
-//   - `result` must be one of the known outcomes.
-//   - `slug` must match the consumer's input pattern and bound, so it cannot
-//     carry anything the client did not already send.
-//   - `openbao_written` and `stored_matches_live` must agree with `result`
-//     (adoptOutcomes). An incoherent combination, such as "adopted" without
-//     a write, is a faulty helper and is refused rather than passed on.
+//	{"result": "...", "openbao_written": bool, "stored_matches_live": bool|null}
+//
+// There is no string or numeric field whose value the helper chooses, so
+// there is no channel through which a faulty helper could hand token
+// material back to the client. The client already knows the monitor ID and
+// slug it supplied. Echoing them back could prove only syntax, never
+// equality with what was sent, so the first version's monitor_id and slug
+// were removed.
+//
+// Like kuma.push-mint's and woodpecker.repo-secret-set's validators, every
+// field is decoded AND checked against a closed set. The fields are not
+// independent, so this validator also requires:
+//
+//   - every key present; pointer fields make a missing key detectable, and
+//     stored_matches_live's presence is tracked separately from its value
+//     because it is nullable
+//   - `result` one of adoptOutcomes
+//   - `openbao_written` and `stored_matches_live` coherent with `result`
+//     (for example, "conflict" can never have written, and "adopted" must
+//     have written and matched)
 type kumaAdoptPushAdoptResult struct {
 	Result            *string `json:"result"`
-	MonitorID         *int64  `json:"monitor_id"`
-	Slug              *string `json:"slug"`
 	OpenBaoWritten    *bool   `json:"openbao_written"`
 	StoredMatchesLive *bool   `json:"stored_matches_live"`
 	// storedMatchesLiveSet records that the key was present even when its
@@ -51,11 +58,12 @@ func (r *kumaAdoptPushAdoptResult) UnmarshalJSON(data []byte) error {
 	return decodeExactlyOne(data, (*alias)(r))
 }
 
-// adoptOutcome is what a result permits. written/matches are nil where the
-// result allows either value (matches: nil means "must be JSON null").
+// adoptOutcome is what a result permits. written is nil where either value is
+// coherent. matchesNull means stored_matches_live must be JSON null;
+// otherwise it must equal *matches.
 type adoptOutcome struct {
-	written     *bool // nil: either true or false is coherent
-	matches     *bool // nil with matchesNull: must be null
+	written     *bool
+	matches     *bool
 	matchesNull bool
 }
 
@@ -64,7 +72,7 @@ var (
 	adoptFalse = false
 )
 
-// adoptOutcomes must stay in step with RESULTS in kuma-push-adopt.py.
+// adoptOutcomes must stay in step with the helper's own result table.
 var adoptOutcomes = map[string]adoptOutcome{
 	// A new OpenBao entry was created and read back equal to the live token.
 	"adopted": {written: &adoptTrue, matches: &adoptTrue},
@@ -91,15 +99,6 @@ var adoptOutcomes = map[string]adoptOutcome{
 	"kuma_changed_during_adopt": {written: nil, matchesNull: true},
 }
 
-// kumaAdoptSlugRE and kumaAdoptSlugMax mirror broker/consumers/kuma-adopt.json's
-// `slug` input in parzival-k-fed-config.
-var kumaAdoptSlugRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
-
-const (
-	kumaAdoptSlugMax      = 64
-	kumaAdoptMonitorIDMax = 999999999
-)
-
 func init() {
 	responseValidators["kuma-adopt.push-adopt"] = canonicalizeKumaAdoptPushAdopt
 }
@@ -115,19 +114,12 @@ func canonicalizeKumaAdoptPushAdopt(raw []byte) (json.RawMessage, error) {
 	if err := decodeExactlyOne(raw, &r); err != nil {
 		return nil, fmt.Errorf("%s: response did not match the approved shape: %w", op, err)
 	}
-	if r.Result == nil || r.MonitorID == nil || r.Slug == nil || r.OpenBaoWritten == nil ||
-		!r.storedMatchesLiveSet {
+	if r.Result == nil || r.OpenBaoWritten == nil || !r.storedMatchesLiveSet {
 		return nil, fmt.Errorf("%s: response is missing a required field", op)
 	}
 	outcome, ok := adoptOutcomes[*r.Result]
 	if !ok {
 		return nil, fmt.Errorf("%s: response result is not an approved value", op)
-	}
-	if *r.MonitorID < 1 || *r.MonitorID > kumaAdoptMonitorIDMax {
-		return nil, fmt.Errorf("%s: response monitor_id is out of range", op)
-	}
-	if len(*r.Slug) > kumaAdoptSlugMax || !kumaAdoptSlugRE.MatchString(*r.Slug) {
-		return nil, fmt.Errorf("%s: response slug is not an approved value", op)
 	}
 	if outcome.written != nil && *r.OpenBaoWritten != *outcome.written {
 		return nil, fmt.Errorf("%s: openbao_written is incoherent with the result", op)
@@ -140,11 +132,9 @@ func canonicalizeKumaAdoptPushAdopt(raw []byte) (json.RawMessage, error) {
 	}
 	canonical, err := json.Marshal(struct {
 		Result            string `json:"result"`
-		MonitorID         int64  `json:"monitor_id"`
-		Slug              string `json:"slug"`
 		OpenBaoWritten    bool   `json:"openbao_written"`
 		StoredMatchesLive *bool  `json:"stored_matches_live"`
-	}{*r.Result, *r.MonitorID, *r.Slug, *r.OpenBaoWritten, r.StoredMatchesLive})
+	}{*r.Result, *r.OpenBaoWritten, r.StoredMatchesLive})
 	if err != nil {
 		return nil, fmt.Errorf("%s: marshal canonical response: %w", op, err)
 	}
