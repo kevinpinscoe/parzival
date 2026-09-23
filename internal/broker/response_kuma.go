@@ -3,7 +3,8 @@ package broker
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
+	"net/url"
+	"regexp"
 )
 
 // kumaPushMintResult is kuma-push-mint.sh's declared response shape
@@ -21,6 +22,52 @@ type kumaPushMintResult struct {
 	Created bool   `json:"created"`
 	PushURL string `json:"push_url,omitempty"`
 	Reason  string `json:"reason,omitempty"`
+}
+
+// The exact push_url contract of the deployed helper, derived from
+// parzival-k-fed-config's hosts/fldw/parzival-broker/kuma-push-mint.sh (the
+// repo copy and /usr/local/libexec/parzival-broker/kuma-push-mint.sh, which
+// agree as of 2026-09-23):
+//
+//	KUMA_PUBLIC_URL="https://uptime.kevininscoe.com"
+//	push_token=$(/usr/bin/openssl rand -hex 16)   -> 32 lowercase hex characters
+//	push_url="${KUMA_PUBLIC_URL}/api/push/${push_token}"
+//
+// If the helper's origin or token generation ever changes, this must change
+// with it, in the same pull request pair.
+const (
+	kumaPushMintScheme = "https"
+	kumaPushMintHost   = "uptime.kevininscoe.com"
+	kumaPushMintPrefix = "/api/push/"
+)
+
+var kumaPushMintTokenRE = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// validKumaPushMintURL parses raw and requires every component to be exactly
+// what the helper produces: https, the one approved host (no port), no
+// userinfo, no query (not even an empty "?"), no fragment, no opaque or
+// escaped path, and a path of exactly /api/push/<token> with a token of
+// exactly 32 lowercase hex characters. It then requires the whole string to
+// equal the canonical form rebuilt from those parts, so no encoding the
+// parser normalises away can slip through.
+func validKumaPushMintURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != kumaPushMintScheme || u.Host != kumaPushMintHost || u.User != nil ||
+		u.Opaque != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" ||
+		u.RawFragment != "" || u.RawPath != "" {
+		return false
+	}
+	if len(u.Path) <= len(kumaPushMintPrefix) || u.Path[:len(kumaPushMintPrefix)] != kumaPushMintPrefix {
+		return false
+	}
+	token := u.Path[len(kumaPushMintPrefix):]
+	if !kumaPushMintTokenRE.MatchString(token) {
+		return false
+	}
+	return raw == kumaPushMintScheme+"://"+kumaPushMintHost+kumaPushMintPrefix+token
 }
 
 var kumaPushMintReasons = map[string]bool{
@@ -44,8 +91,7 @@ func canonicalizeKumaPushMint(raw []byte) (json.RawMessage, error) {
 	}
 	// The offending value is never included in an error.
 	if result.Created {
-		if result.Reason != "" || !strings.HasPrefix(result.PushURL, "https://") ||
-			!strings.Contains(result.PushURL, "/api/push/") {
+		if result.Reason != "" || !validKumaPushMintURL(result.PushURL) {
 			return nil, fmt.Errorf("kuma.push-mint: created response is not coherent")
 		}
 	} else if result.PushURL != "" || !kumaPushMintReasons[result.Reason] {
