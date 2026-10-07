@@ -1,67 +1,47 @@
-## v0.2.0
+## v0.2.1
 
-Parzival is still **pre-1.0**: the policy format, interfaces, and configuration layout
-may change before a stable `v1.0.0`. This release adds a per-rule guard against AI
-agent contexts, closes an ordering gap in `exec` and `mount`, and tightens what the
-broker will accept back from its helper scripts.
+A packaging fix release. The `parzival` and `parzival-broker` binaries behave exactly as in
+v0.2.0. Parzival is still **pre-1.0**.
 
-### New: keep a rule's grant away from AI agents (`deny_agents`)
+### Fixed: package upgrades no longer disable a running broker
 
-A policy rule can now carry `"deny_agents": true`. When Parzival detects that it is
-running inside an AI agent harness — the same detection that already refuses raw
-`get` there — the rule still matches but refuses the request. Because the first
-matching rule decides, no broader rule further down the list can grant the same
-request to the agent instead. Requests made outside an agent context, and rules
-without the field, behave exactly as before.
+The RPM and DEB packages' remove script ran `systemctl disable --now` on
+`parzival-broker.service` and `check-parzival-broker.timer` unconditionally. Both rpm and
+dpkg also run the old package's remove script during an upgrade. So every package upgrade
+stopped and disabled a running, enabled broker and its health-check timer, and nothing
+started them again.
 
-- It applies to every mode the rule matches: `get`, `exec`, and `mount`.
-- It is a guard against the normal agent harness, **not** a proof that a human is
-  present. See THREAT-MODEL.md for what it does and does not establish.
-- First match still wins. An *earlier* matching allow is not affected, so to keep an
-  agent off a secret whatever `--as` label it asserts, the denying rule must cover
-  every identity and every mode that later rules grant on that secret, and sit above
-  those rules. MANUAL.md has a worked example.
-- `policy validate` and `policy check` now judge reachability, shadowing, and
-  redundancy for both agent and non-agent requests. An earlier allow that makes an
-  agent denial unreachable is an error; overlaps that only matter for agents are
-  warnings, as are `deny_agents` on a rule that already denies and an
-  agent-denying rule limited to specific identities.
-- `policy what-if --agent` asks the question for an agent context. Without the flag,
-  `what-if` answers for a request with no agent, whatever shell it is run from.
-- The audit log records the detected agent marker on decisions made in an agent
-  context.
-- Authorization deltas (`policy grant` / `policy apply`) also probe the agent context
-  when either policy uses `deny_agents`.
+From this release:
 
-An older Parzival refuses a policy file that uses `deny_agents`, rather than ignoring
-the field. Upgrade every host that reads a policy before adding the field to it.
+- The remove script stops and disables the units only on a real removal (`dnf remove`,
+  `apt remove`). An upgrade leaves them enabled or disabled as it found them.
+- On an upgrade, a broker that is already running is restarted (`systemctl try-restart`),
+  so the new `parzival-broker` binary is the one serving. A stopped broker stays stopped,
+  and the package still never enables or starts a unit on its own.
+- CI now runs the package scripts under every argument rpm and dpkg pass them, and checks
+  that the built packages embed the scripts unchanged.
 
-### Changed: `exec` and `mount` authorize every secret before fetching any
+### Upgrading from v0.2.0 or earlier — read this first
 
-A profile renders all-or-nothing, but previously a profile whose second secret was
-refused had already fetched the first one from the store. `exec` and `mount` now check
-every secret in the profile against the policy first, and only then fetch. A refusal
-now means no store access, no rendering, no credential file, and no child process.
+The fix cannot protect the upgrade **from** v0.2.0 or earlier. The package being replaced
+runs its own, unguarded copy of the remove script, so this one upgrade still disables the
+broker unless you prevent it. If the broker is enabled on the host:
 
-### Broker
+```bash
+systemctl is-enabled parzival-broker.service check-parzival-broker.timer   # note the state
 
-- Consumer operations can register a **response validator**, so the broker checks a
-  helper script's output against an exact, closed contract before returning it.
-  Validators ship for the Uptime Kuma push-monitor and Woodpecker repository-secret
-  example operations; anything the contract does not allow is refused, not passed
-  through.
-- Operations gain an optional `response_config`: administrator-owned settings for a
-  validator, read only from the root-owned operation definition and never from a
-  request. The broker refuses to start on a missing, unknown, or invalid key.
-- The push-monitor validator now requires the returned push URL to match the
-  configured origin and token format exactly.
+# RPM: skip the old package's remove script
+sudo dnf download parzival
+sudo rpm -Uvh --nopreun parzival-0.2.1-1.*.rpm
 
-### Documentation
+# DEB: upgrade, then re-enable what was enabled
+sudo apt install parzival
+sudo systemctl enable --now parzival-broker.service check-parzival-broker.timer
+```
 
-- THREAT-MODEL.md states the disclosure invariant, and covers terminal disclosure,
-  argument-vector exposure, the in-memory residual, and the new `deny_agents` guard.
-- `parzival service` examples put `--input` before the operation name.
+Hosts that never enabled the broker can upgrade normally. Every later upgrade, from v0.2.1
+onward, needs none of this. See INSTALL.md, "Upgrading an RPM or DEB install".
 
 See [README.md](README.md), [INSTALL.md](INSTALL.md), [MANUAL.md](MANUAL.md), and
-[THREAT-MODEL.md](THREAT-MODEL.md) for the full design, installation, usage, and
-security model.
+[THREAT-MODEL.md](THREAT-MODEL.md) for the full design, installation, usage, and security
+model.
