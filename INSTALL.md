@@ -114,6 +114,27 @@ for Intel Macs; only Apple Silicon (`arm64`) is published.
 > **Release/cutover placeholder**, same reasoning as above: the tap exists and serves other
 > tools already, but the `parzival` cask will not resolve until the first tagged release.
 
+> **Managed Macs with endpoint protection.** If the Mac runs an endpoint security agent
+> (CrowdStrike Falcon, for example) that quarantines software installed outside an approved
+> channel, the cask's downloaded binary may be blocked or removed shortly after install —
+> a Homebrew cask is not an approved channel. A binary compiled on the machine itself is
+> normally allowed. On such a Mac, skip the cask (`brew uninstall --cask parzival` if it
+> is already installed) and build the release tag from source with the release flags:
+>
+> ```bash
+> git clone https://github.com/kevinpinscoe/parzival.git && cd parzival
+> git checkout v0.2.1
+> CGO_ENABLED=0 go build -trimpath \
+>   -ldflags "-s -w -X main.version=0.2.1 -X main.commit=$(git rev-parse --short HEAD)" \
+>   -o parzival ./cmd/parzival
+> install -m 0755 parzival ~/.local/bin/
+> parzival version    # parzival 0.2.1 (commit ef1ea46)
+> ```
+>
+> On macOS, run `go test ./...` with `TMPDIR=/tmp`: the default `/var/folders/...` temp path
+> makes the broker tests' Unix socket paths exceed the macOS length limit (`bind: invalid
+> argument`).
+
 ### From source (any platform Go supports)
 
 ```bash
