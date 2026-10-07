@@ -20,6 +20,7 @@ import (
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 
+	"github.com/kevinpinscoe/parzival/internal/agent"
 	"github.com/kevinpinscoe/parzival/internal/policy"
 	"github.com/kevinpinscoe/parzival/internal/profile"
 	"github.com/kevinpinscoe/parzival/internal/secret"
@@ -30,7 +31,14 @@ import (
 // is unmounted or the process receives SIGINT/SIGTERM. identity is the policy
 // label applied to every open() on this mount (from `mount --as`).
 func Serve(mountpoint, identity string) error {
-	root := &rootNode{identity: identity}
+	// Agent context is detected once, from the environment of the process
+	// serving the mount: that is the caller that asked for the credentials. The
+	// FUSE opener is logged as provenance but its environment is not inspected.
+	agentEnv := ""
+	if m, ok := agent.Detect(); ok {
+		agentEnv = m.Env
+	}
+	root := &rootNode{identity: identity, agent: agentEnv}
 	server, err := fs.Mount(mountpoint, root, &fs.Options{
 		MountOptions: fuse.MountOptions{
 			FsName:     "parzival",
@@ -58,6 +66,7 @@ func Serve(mountpoint, identity string) error {
 type rootNode struct {
 	fs.Inode
 	identity string
+	agent    string // detected agent marker for the serving process, or ""
 }
 
 var (
@@ -82,7 +91,7 @@ func (r *rootNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) 
 		return nil, syscall.ENOENT
 	}
 	out.Mode = 0o400
-	child := &credFile{profileName: name, identity: r.identity}
+	child := &credFile{profileName: name, identity: r.identity, agent: r.agent}
 	return r.NewInode(ctx, child, fs.StableAttr{Mode: fuse.S_IFREG}), 0
 }
 
@@ -91,6 +100,7 @@ type credFile struct {
 	fs.Inode
 	profileName string
 	identity    string
+	agent       string // detected agent marker for the serving process, or ""
 }
 
 var (
@@ -163,14 +173,28 @@ func (c *credFile) materialize(ctx context.Context) ([]byte, syscall.Errno) {
 		}
 	}()
 
-	for name, ref := range prof.Secrets {
-		parsed, err := store.ParseRef(ref)
+	// Authorize every secret before fetching any, as exec does: a profile
+	// renders all-or-nothing, so a refusal must not leave earlier secrets
+	// already pulled from the store.
+	names := make([]string, 0, len(prof.Secrets))
+	for name := range prof.Secrets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	refs := make(map[string]store.SecretRef, len(names))
+	for _, name := range names {
+		parsed, err := store.ParseRef(prof.Secrets[name])
 		if err != nil {
 			return nil, syscall.EIO
 		}
-		if err := policy.Authorize(policy.Request{Ref: parsed.Raw, Identity: c.identity, Mode: policy.ModeMount, Time: now, Caller: caller}); err != nil {
+		if err := policy.Authorize(policy.Request{Ref: parsed.Raw, Identity: c.identity, Mode: policy.ModeMount, Time: now, Caller: caller, Agent: c.agent}); err != nil {
 			return nil, syscall.EACCES
 		}
+		refs[name] = parsed
+	}
+
+	for _, name := range names {
+		parsed := refs[name]
 		backend, err := store.Resolve(parsed)
 		if err != nil {
 			return nil, syscall.EIO

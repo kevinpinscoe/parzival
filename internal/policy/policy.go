@@ -44,6 +44,12 @@ type Request struct {
 	Mode     string    // delivery mode: ModeGet, ModeExec or ModeMount
 	Time     time.Time // evaluation time (local)
 	Caller   string    // optional provenance (e.g. a mount open() caller uid/pid/exe); logged, never matched
+	// Agent names the environment marker that identified an AI agent harness
+	// (see internal/agent), or is empty when none was detected. It never
+	// affects whether a rule matches — only what a matching deny_agents rule
+	// decides. Like Identity it comes from the caller's environment, so it is
+	// a guard against the normal harness, not proof that a human is present.
+	Agent string
 }
 
 // Rule allows or denies requests matching all of its non-empty conditions.
@@ -59,6 +65,25 @@ type Rule struct {
 	Weekdays    []string `json:"weekdays,omitempty"`   // e.g. "Mon", "Monday" (case-insensitive)
 	Monthdays   []int    `json:"monthdays,omitempty"`  // 1..31
 	Hours       string   `json:"hours,omitempty"`      // "HH:MM-HH:MM" local; supports wrap-around
+	// DenyAgents refuses this rule's grant to a request made from a detected
+	// AI agent context. The rule still matches such a request — so evaluation
+	// stops here and no later, broader rule can grant it instead — but the
+	// decision is deny. Requests with no agent detected are unaffected.
+	//
+	// It is first-match like everything else: an earlier rule that matches the
+	// request decides before this one is reached. To keep agents away from a
+	// secret whatever --as label they assert, the rule must cover that secret
+	// for every identity (no "identities", or "*") and sit above every broader
+	// grant of it. Detection keys on environment markers, so this guards
+	// against the normal agent harness; it does not authenticate a human.
+	DenyAgents bool `json:"deny_agents,omitempty"`
+}
+
+// outcome is the decision a rule reaches when it matches, in a context with or
+// without a detected agent. Analysis evaluates both contexts through this one
+// function so it can never disagree with Evaluate about what a rule does.
+func (rule Rule) outcome(agent bool) bool {
+	return rule.Allow && !(agent && rule.DenyAgents)
 }
 
 // SchemaVersion is the policy format this binary understands. A policy.json may
@@ -81,12 +106,16 @@ type Policy struct {
 type Decision struct {
 	Allow  bool
 	Reason string
+	// AgentDenied is set when the deciding rule allows the request but refuses
+	// it because an agent context was detected (Rule.DenyAgents).
+	AgentDenied bool
 }
 
 // DeniedError is returned by Authorize when a request is not allowed.
 type DeniedError struct {
-	Req    Request
-	Reason string
+	Req         Request
+	Reason      string
+	AgentDenied bool
 }
 
 func (e *DeniedError) Error() string {
@@ -98,6 +127,11 @@ func (e *DeniedError) Error() string {
 		e.Req.Ref, id, e.Req.Mode, e.Req.Time.Format("Mon 15:04"), e.Reason, filepath.Join(ConfigDir(), "policy.json"))
 	// The commonest mode-based refusal, worth naming so it is not mistaken for a
 	// missing rule: the identity is allowed brokered delivery but not the raw value.
+	if e.AgentDenied {
+		msg += "\nnote: the matching rule sets deny_agents and this process was detected as running under an AI agent harness ($" + e.Req.Agent +
+			") — no other --as label or later rule changes that; if the operation is genuinely meant for a person, run it yourself in a terminal that is not driving parzival"
+		return msg
+	}
 	if e.Req.Mode == ModeGet {
 		msg += "\nnote: if this identity is restricted to brokered delivery, use `parzival exec` or `parzival mount` — `get` writes the raw value to a stream the caller controls"
 	}
@@ -126,15 +160,20 @@ func Authorize(r Request) error {
 		return nil
 	}
 	writeAudit(r, "DENY", d.Reason)
-	return &DeniedError{Req: r, Reason: d.Reason}
+	return &DeniedError{Req: r, Reason: d.Reason, AgentDenied: d.AgentDenied}
 }
 
 // Evaluate returns the decision for r: the first matching rule wins, else deny.
 func (p *Policy) Evaluate(r Request) Decision {
 	for i, rule := range p.Rules {
-		if rule.matches(r) {
-			return Decision{Allow: rule.Allow, Reason: fmt.Sprintf("rule %d", i)}
+		if !rule.matches(r) {
+			continue
 		}
+		if rule.Allow && !rule.outcome(r.Agent != "") {
+			return Decision{Allow: false, AgentDenied: true,
+				Reason: fmt.Sprintf("rule %d denies agent contexts (deny_agents; detected $%s)", i, r.Agent)}
+		}
+		return Decision{Allow: rule.Allow, Reason: fmt.Sprintf("rule %d", i)}
 	}
 	return Decision{Allow: false, Reason: "no matching rule (default deny)"}
 }
@@ -320,6 +359,9 @@ func writeAudit(r Request, decision, reason string) {
 		r.Time.Format(time.RFC3339), decision, id, mode, r.Ref, reason)
 	if r.Caller != "" {
 		line += "\tcaller=" + r.Caller
+	}
+	if r.Agent != "" {
+		line += "\tagent=" + r.Agent
 	}
 	fmt.Fprintln(f, line)
 }

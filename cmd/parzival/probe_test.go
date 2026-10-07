@@ -70,7 +70,7 @@ const probeGetAllowed = `{
 // probe, or the verb fails exactly the callers it was built for.
 func TestProbeReachesRefThroughBrokeredModeOnly(t *testing.T) {
 	p := parsePolicy(t, probeBrokeredOnly)
-	mode, reason, ok := probeReachableMode(p, "bao:app/gitea#token", "ai", time.Now())
+	mode, reason, ok := probeReachableMode(p, "bao:app/gitea#token", "ai", "", time.Now())
 	if !ok {
 		t.Fatal("brokered-only identity could not reach its own ref")
 	}
@@ -86,7 +86,7 @@ func TestProbeReachesRefThroughBrokeredModeOnly(t *testing.T) {
 // whether an identity can still read a raw value.
 func TestProbePrefersGetWhenGetIsAllowed(t *testing.T) {
 	p := parsePolicy(t, probeGetAllowed)
-	mode, _, ok := probeReachableMode(p, "gopass:anything", "ansible", time.Now())
+	mode, _, ok := probeReachableMode(p, "gopass:anything", "ansible", "", time.Now())
 	if !ok {
 		t.Fatal("get-mode identity could not reach its own ref")
 	}
@@ -97,7 +97,7 @@ func TestProbePrefersGetWhenGetIsAllowed(t *testing.T) {
 
 func TestProbeReportsNoReachableMode(t *testing.T) {
 	p := parsePolicy(t, probeBrokeredOnly)
-	if mode, _, ok := probeReachableMode(p, "bao:app/gitea#token", "someone-else", time.Now()); ok {
+	if mode, _, ok := probeReachableMode(p, "bao:app/gitea#token", "someone-else", "", time.Now()); ok {
 		t.Errorf("an identity with no rule reached the ref via %q", mode)
 	}
 }
@@ -106,7 +106,7 @@ func TestProbeReportsNoReachableMode(t *testing.T) {
 // when another mode for the same identity is allowed.
 func TestProbeNeverReportsADeniedMode(t *testing.T) {
 	p := parsePolicy(t, probeBrokeredOnly)
-	mode, _, ok := probeReachableMode(p, "bao:app/gitea#token", "ai", time.Now())
+	mode, _, ok := probeReachableMode(p, "bao:app/gitea#token", "ai", "", time.Now())
 	if !ok {
 		t.Fatal("want reachable")
 	}

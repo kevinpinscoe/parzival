@@ -450,7 +450,9 @@ parzival policy what-if --as agent-x --mode exec --ref 'bao:app/gitea#token'
 
 When nothing matches, it names the rules that came closest and the condition that
 stopped each — the wrong mode, the wrong day, an hours window. Nothing is fetched and
-nothing is written to the audit log.
+nothing is written to the audit log. Add `--agent` to evaluate the request as coming from
+an AI agent context, for rules that set `deny_agents` (MANUAL.md → *Keep a Rule's Grant
+Away From AI Agents*).
 
 The two commands are deliberately separate from `policy check`, whose narrower
 contract — mode bypasses only — is relied on as a deployment gate.

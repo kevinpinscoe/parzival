@@ -74,6 +74,7 @@ func runProbe(args []string) error {
 		return err
 	}
 	identity := resolveIdentity(*as)
+	agentEnv := agentContext()
 	now := time.Now()
 
 	p, exists, err := policy.Load()
@@ -91,22 +92,22 @@ func runProbe(args []string) error {
 		return &exitError{code: probeExitDenied}
 	}
 
-	mode, reason, ok := probeReachableMode(p, ref.Raw, identity, now)
+	mode, reason, ok := probeReachableMode(p, ref.Raw, identity, agentEnv, now)
 	if !ok {
 		fmt.Println("\nDENIED")
 		fmt.Println("\nReached:  no mode — get, exec and mount are all denied")
 		for _, m := range probeModeOrder {
-			d := p.Evaluate(policy.Request{Ref: ref.Raw, Identity: identity, Mode: m, Time: now})
+			d := p.Evaluate(policy.Request{Ref: ref.Raw, Identity: identity, Mode: m, Time: now, Agent: agentEnv})
 			fmt.Printf("  %-5s  %s\n", m, d.Reason)
 		}
 		// One honest audit record, under the mode the caller most likely wanted.
 		// Probing each mode through Authorize would write three, two of them
 		// denials that no caller ever made.
-		logProbeDecision(ref.Raw, identity, policy.ModeGet, now)
+		logProbeDecision(ref.Raw, identity, policy.ModeGet, agentEnv, now)
 		return &exitError{code: probeExitDenied}
 	}
 
-	if err := logProbeDecision(ref.Raw, identity, mode, now); err != nil {
+	if err := logProbeDecision(ref.Raw, identity, mode, agentEnv, now); err != nil {
 		// The policy allowed it a moment ago and refuses it now, or the audit log
 		// could not be written. Either is a real refusal, not a probe result.
 		fmt.Println("\nDENIED")
@@ -114,7 +115,7 @@ func runProbe(args []string) error {
 		return &exitError{code: probeExitDenied}
 	}
 
-	backend, err := store.Resolve(ref)
+	backend, err := resolveStore(ref)
 	if err != nil {
 		fmt.Printf("\nERROR\n\nReached:  %s (%s)\n", mode, reason)
 		fmt.Fprintln(os.Stderr, "parzival:", err)
@@ -143,9 +144,11 @@ func runProbe(args []string) error {
 
 // probeReachableMode returns the first delivery mode the policy permits for this
 // ref and identity, and the reason the decision names (the deciding rule).
-func probeReachableMode(p *policy.Policy, ref, identity string, at time.Time) (mode, reason string, ok bool) {
+// agentEnv is the detected agent marker, or "" — a deny_agents rule answers
+// differently for an agent, and probe must report what this caller would get.
+func probeReachableMode(p *policy.Policy, ref, identity, agentEnv string, at time.Time) (mode, reason string, ok bool) {
 	for _, m := range probeModeOrder {
-		d := p.Evaluate(policy.Request{Ref: ref, Identity: identity, Mode: m, Time: at})
+		d := p.Evaluate(policy.Request{Ref: ref, Identity: identity, Mode: m, Time: at, Agent: agentEnv})
 		if d.Allow {
 			return m, d.Reason, true
 		}
@@ -160,9 +163,9 @@ func probeReachableMode(p *policy.Policy, ref, identity string, at time.Time) (m
 // nothing. Caller marks it as a probe so a reader can tell a reachability check
 // from a delivery: the log's job is to answer what was actually retrieved, and
 // a probe retrieved nothing the caller can see.
-func logProbeDecision(ref, identity, mode string, at time.Time) error {
+func logProbeDecision(ref, identity, mode, agentEnv string, at time.Time) error {
 	return policy.Authorize(policy.Request{
-		Ref: ref, Identity: identity, Mode: mode, Time: at, Caller: "probe",
+		Ref: ref, Identity: identity, Mode: mode, Time: at, Caller: "probe", Agent: agentEnv,
 	})
 }
 

@@ -41,6 +41,23 @@ type Probe struct {
 	Ref      string
 	Identity string
 	Mode     string
+	// Agent probes the request as made from a detected AI agent context, where
+	// a deny_agents rule decides differently.
+	Agent bool
+}
+
+// probeAgentMarker is the Request.Agent value a simulated agent-context probe
+// carries. It names no real environment variable, so nothing that reads it
+// can mistake a simulation for a detection.
+const probeAgentMarker = "(simulated agent)"
+
+// Request returns the authorization request this probe stands for.
+func (p Probe) Request(at time.Time) Request {
+	r := Request{Ref: p.Ref, Identity: p.Identity, Mode: p.Mode, Time: at}
+	if p.Agent {
+		r.Agent = probeAgentMarker
+	}
+	return r
 }
 
 func (p Probe) String() string {
@@ -48,7 +65,11 @@ func (p Probe) String() string {
 	if id == "" {
 		id = "(none)"
 	}
-	return fmt.Sprintf("%s / %s / %s", id, p.Mode, p.Ref)
+	s := fmt.Sprintf("%s / %s / %s", id, p.Mode, p.Ref)
+	if p.Agent {
+		s += " / agent"
+	}
+	return s
 }
 
 // Change is one probe whose decision differs between two policies.
@@ -116,11 +137,34 @@ func (d Delta) Unexpected(want []Probe) []Change {
 	}
 	var out []Change
 	for _, c := range d.Changes {
-		if !expected[c.Probe] {
-			out = append(out, c)
+		if expected[c.Probe] {
+			continue
 		}
+		// An agent-context probe exists only when some policy sets
+		// deny_agents. Where its non-agent counterpart was expected and the
+		// two moved the same way, the agent context simply received the same
+		// grant as everyone else — the access asked for, not a side effect.
+		// An agent probe moving differently from its counterpart is reported.
+		if c.Probe.Agent {
+			plain := c.Probe
+			plain.Agent = false
+			if expected[plain] && d.movedSameWay(plain, c) {
+				continue
+			}
+		}
+		out = append(out, c)
 	}
 	return out
+}
+
+// movedSameWay reports whether probe p changed in the same direction as c.
+func (d Delta) movedSameWay(p Probe, c Change) bool {
+	for _, other := range d.Changes {
+		if other.Probe == p {
+			return other.WasAllow == c.WasAllow && other.NowAllow == c.NowAllow
+		}
+	}
+	return false
 }
 
 // DiffAuthorization evaluates old and new over probes and reports the decisions
@@ -138,7 +182,7 @@ func DiffAuthorization(old, updated *Policy, probes []Probe, at time.Time) Delta
 	}
 
 	for _, pr := range probes {
-		req := Request{Ref: pr.Ref, Identity: pr.Identity, Mode: pr.Mode, Time: at}
+		req := pr.Request(at)
 		wasAllow, wasRule := decide(old, req)
 		nowAllow, nowRule := decide(updated, req)
 		if wasAllow == nowAllow {
@@ -178,7 +222,7 @@ func decide(p *Policy, r Request) (allow bool, rule int) {
 	}
 	for i, candidate := range p.Rules {
 		if candidate.matches(r) {
-			return candidate.Allow, i
+			return candidate.outcome(r.Agent != ""), i
 		}
 	}
 	return false, -1
@@ -200,12 +244,20 @@ func decide(p *Policy, r Request) (allow bool, rule int) {
 func ProbeSet(policies []*Policy, extra []Probe) []Probe {
 	refs := map[string]bool{}
 	ids := map[string]bool{"": true}
+	// Agent context is a second evaluation of every request, but only where it
+	// can change a decision: a policy with no deny_agents rule decides agent
+	// and non-agent requests identically, and doubling its probe set would
+	// only double the time spent proving that.
+	agentMatters := false
 
 	for _, p := range policies {
 		if p == nil {
 			continue
 		}
 		for _, r := range p.Rules {
+			if r.DenyAgents {
+				agentMatters = true
+			}
 			for _, s := range r.Secrets {
 				refs[s] = true
 			}
@@ -233,6 +285,9 @@ func ProbeSet(policies []*Policy, extra []Probe) []Probe {
 		for _, id := range sortedKeys(ids) {
 			for _, m := range modes {
 				out = append(out, Probe{Ref: ref, Identity: id, Mode: m})
+				if agentMatters {
+					out = append(out, Probe{Ref: ref, Identity: id, Mode: m, Agent: true})
+				}
 			}
 		}
 	}
@@ -261,6 +316,9 @@ func ProbeSet(policies []*Policy, extra []Probe) []Probe {
 // that moved is a side effect. A rule with no condition on some dimension is
 // left as the empty label / the "*" ref on that dimension, which is the widest
 // thing it says and therefore what it should be held to.
+//
+// The probes are non-agent requests; Delta.Unexpected extends them to the
+// agent context itself (see there).
 func RuleProbes(r Rule) []Probe {
 	refs := r.Secrets
 	if len(refs) == 0 {

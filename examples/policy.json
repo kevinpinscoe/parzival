@@ -14,6 +14,13 @@
     },
     {
       "allow": true,
+      "deny_agents": true,
+      "description": "A credential meant for a person at a terminal: brokered use only, and refused whenever an AI agent harness is detected. The rule names no identities, so asserting a different --as label does not get around it, and it sits above every broader grant of the same ref (below the two deny-rules, which it must not override), because the first matching rule decides — an EARLIER allow would still win. This guards against the normal agent harness; it is not human authentication. Check both contexts with: parzival policy what-if --as kevin --mode exec --ref 'bao:app/admin#token' [--agent]",
+      "secrets": ["bao:app/admin#token"],
+      "modes": ["exec", "mount"]
+    },
+    {
+      "allow": true,
       "description": "Gitea token for AI agents and other non-human callers: brokered delivery only, so an agent can USE the credential without ever seeing its value.",
       "secrets": ["bao:app/gitea#*"],
       "identities": ["ai", "agent-*"],
