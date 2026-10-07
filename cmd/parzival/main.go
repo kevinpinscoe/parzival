@@ -162,7 +162,7 @@ Usage:
   parzival service [--socket PATH] [--input name=value ...] <consumer>.<operation>
   parzival policy check    [--file PATH]
   parzival policy validate [--file PATH]
-  parzival policy what-if  [--file PATH] --as ID --mode MODE --ref REF [--at TIME]
+  parzival policy what-if  [--file PATH] --as ID --mode MODE --ref REF [--at TIME] [--agent]
   parzival doctor [--allow-ambient-openbao]
   parzival version
 
@@ -242,6 +242,15 @@ Approval policy (strict deny-by-default):
   mode restriction only holds when EVERY allow-rule matching that ref excludes
   get; otherwise the caller asserts a different --as label and reads the value.
 
+  "deny_agents": true on a rule refuses that rule's grant, in every mode it
+  matches, when an AI agent harness is detected (the same detection that refuses
+  get). The rule still matches, so no LATER rule can grant the request to the
+  agent; an EARLIER matching allow still wins. To deny agents a secret whatever
+  --as label they assert, cover that secret for every identity and place the
+  rule above every broader grant. exec authorizes every secret in a profile
+  before fetching any. This guards against the normal agent harness; it is not
+  human authentication.
+
 policy check:
   Reports which refs can be read as a raw value, and which mode restrictions a
   different --as label would bypass. Exits non-zero if any is bypassable, so it
@@ -266,6 +275,9 @@ policy what-if:
   matching rule wins, a refused request usually has an allow-rule — sitting
   below a rule that matched first — and the rule number is the answer. --at
   evaluates at a chosen time, for rules limited by weekday, month day or hours.
+  --agent evaluates the request as coming from an AI agent context (for rules
+  that set deny_agents); without it what-if assumes no agent, whatever shell it
+  runs in.
 
   Nothing is fetched and nothing is written to the audit log. Exits non-zero
   when the request would be denied, so it can be used as a scripted assertion.

@@ -148,6 +148,7 @@ DENY
 Matched rule: 1
 Identity:     agent-x
 Mode:         exec
+Context:      no AI agent detected
 Secret:       bao:app/gitea#token
 
 Rule 1:
@@ -314,6 +315,91 @@ Use this rule of thumb:
 
 If any allow-rule matching `bao:app/gitea#token` permits `get`, then a caller can use
 that label and read the raw token. `parzival policy check` exists to catch this.
+
+### Keep a Rule's Grant Away From AI Agents (`deny_agents`)
+
+Some credentials are meant only for a person sitting at a terminal: an admin token, a
+privileged operation. A rule and a profile alone cannot express that. `exec` is allowed
+from agent shells by design, and `--as` is self-asserted, so an agent can type the same
+label a person would.
+
+Setting `"deny_agents": true` on a rule refuses that rule's grant whenever Parzival
+detects that it is running under an AI agent harness (the same detection that refuses
+`get`; see below):
+
+```json
+{
+  "schema": 1,
+  "rules": [
+    {
+      "allow": true,
+      "deny_agents": true,
+      "description": "Admin token: brokered use by a person only, never from an agent shell.",
+      "secrets": ["bao:app/youtrack-admin#token"],
+      "modes": ["exec", "mount"]
+    },
+    {
+      "allow": true,
+      "description": "Everything else under app/: brokered delivery for anyone.",
+      "secrets": ["bao:app/*"],
+      "modes": ["exec", "mount"]
+    }
+  ]
+}
+```
+
+How it behaves:
+
+- **With no agent detected, the rule works exactly as if the field were absent.** So does
+  every rule without the field. An ordinary agent `exec` is unchanged.
+- **For an agent, the rule still matches, and decides deny.** Because the first match
+  decides, evaluation stops there. The broader rule below it is never consulted for that
+  request, so it cannot grant the same secret to the agent as a fallback.
+- **It covers every mode the rule matches** — `exec`, `mount`, and `get`. The refusal of
+  `get` in an agent shell is separate and unchanged.
+- **`exec` checks every secret in a profile before fetching any of them.** A refusal on
+  the last secret leaves nothing pulled from the store, rendered, written to the RAM
+  file, or run.
+
+**The first-match limit applies to this field like every other.** It blocks *later*
+rules. An *earlier* rule that matches the request still decides first, and if that rule
+allows, the agent is allowed. To keep agents away from a secret **whatever `--as` label
+they assert**, the agent-denying rule must:
+
+1. **Cover the secret for every identity.** Leave `identities` out, or use `*`. A rule
+   scoped to `identities: ["kevin"]` does not match `--as ai`, so the request falls through
+   to whatever rule matches next.
+2. **Cover every mode a later rule grants on that secret.** The example lists
+   `["exec","mount"]` because the fallback grants exactly those. If the fallback also
+   granted `get` and the denying rule did not list it, a `get` by an agent would fall
+   through to it (`get` in an agent shell is refused anyway, but a human `get` would be
+   reported by `policy check`). Omitting `modes` covers all three.
+3. **Sit above every broader grant of that secret.**
+
+`parzival policy validate` checks for these mistakes:
+
+| Finding | Severity | Meaning |
+| --- | --- | --- |
+| `unreachable … for agent contexts` | error | An earlier rule covers the agent-denying rule and allows, so the denial never takes effect |
+| `shadows … for agent contexts` | warning | An earlier rule overlaps part of it with a different outcome for agents |
+| `deny-agents-identity-scoped` | warning | The rule names identities, so an agent passing another label is not stopped by it |
+| `deny-agents-noop` | warning | `deny_agents` on an `allow: false` rule, which already denies everything it matches |
+
+Ask about each context directly. `what-if` never inherits the shell's own agent
+detection: without `--agent` it evaluates a request with no agent detected, and with
+`--agent` it evaluates one from an agent context:
+
+```bash
+parzival policy what-if --as kevin --mode exec --ref 'bao:app/youtrack-admin#token'          # ALLOW
+parzival policy what-if --as kevin --mode exec --ref 'bao:app/youtrack-admin#token' --agent  # DENY
+```
+
+**What this is not.** It is a guard against the normal agent harness, not human
+authentication. Detection keys on environment variables that a deliberately hostile
+caller can unset, and a harness that sets none of them is not detected. An allowed
+decision means *no agent was detected*, not *a person is present*. For `mount`, detection
+looks at the process serving the mount, not the process opening the file. Every audit
+record for a request with an agent detected carries `agent=<marker>`.
 
 ## Fetch a Secret Without Writing a File
 

@@ -438,6 +438,35 @@ not present it as one. Three holes keep the hash advisory:
 - For interpreted consumers (AI agents), image identity is **unattestable**; isolation,
   not hashing, is the only control.
 
+#### Per-rule agent denial (`deny_agents`) — the same control, extended to brokered use
+
+Refusing `get` keeps a raw value out of a transcript. It does nothing for a credential that
+should not be *used* from an agent at all — a privileged admin token meant for a person at a
+terminal. `exec` is allowed from agent shells by design, and `--as` is self-asserted, so a
+rule and a profile alone cannot make a grant human-only.
+
+A rule carrying `"deny_agents": true` closes that gap **for the normal harness**. When an
+agent context is detected, the rule still matches and decides deny. Because the first match
+decides, no later, broader rule can grant the same request to the agent. With no agent
+detected, it behaves as if the field were absent. `exec` and `mount` authorize every secret
+in a profile before fetching any, so the refusal lands before the store is queried, before
+a template is rendered, before a credential file exists, and before the child starts.
+
+The limits are the ones stated above for the `get` refusal, plus the first-match limit:
+
+- **Not authentication.** It keys on the same environment markers, so a caller that unsets
+  them, or a harness that sets none, is treated as a non-agent. An allow decision means "no
+  agent was detected", never "a human is present". Do not cite it as positive proof of a
+  person.
+- **Only later rules are blocked.** An earlier rule that matches the request and allows
+  still wins. An agent-denying rule protects a secret against any `--as` label only when it
+  covers that secret for every identity and every granted mode, and sits above every
+  broader grant. `policy validate` reports an agent denial that an earlier rule makes
+  unreachable as an error.
+- **`mount` checks the serving process.** For `mount`, detection looks at the environment of
+  the process serving the mount. The process that opens a file is logged as provenance, but
+  its environment is not inspected.
+
 ## Approval policy — what it is and isn't
 
 `parzival` gates every fetch behind a strict deny-by-default policy (`policy.json`) keyed
@@ -606,6 +635,7 @@ temporary plaintext in volatile process memory at the point of use is accepted.
 | Binding delivery to a specific recognized binary | ⚠️ advisory only — real teeth require OS isolation |
 | Approval policy (scoping + audit of requests) | ⚠️ advisory — self-asserted identity; scopes honest callers, not a same-uid adversary |
 | Raw `get` reaching an AI agent's transcript | ⚠️ partial — refused in a *detected* agent shell with no override; an unrecognised harness is not detected (§4b) |
+| Agent use of a grant meant for a person (`deny_agents`) | ⚠️ partial — a *detected* agent is refused that rule's grant and any later fallback; earlier matching allows still win, and detection is not authentication (§4b) |
 | **Client that must use a credential without reading it** | ⚠️ **defended on Linux** — the broker service mode of §4d, under its four stated assumptions; no macOS build yet |
 | Break-glass printing credential material to a terminal | ✅ defended — allowlisted, fail-closed terminal output; classify by exact command shape, no escape hatch |
 | Credential supplied on argv (process inspection, shell history) | ⚠️ partial — literal forms refused for the *enumerated* credential-bearing shapes (arbitrary data to a secrets backend, positional credentials, credential-bearing flag values); a shape introduced by a later CLI version is not covered until it is added |
