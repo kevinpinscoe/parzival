@@ -1,59 +1,66 @@
-## v0.1.0-pre.2 — first public prerelease
+## v0.2.0
 
-This is Parzival's first public prerelease: **pre-1.0**, and the interfaces, policy
-format, and configuration layout may still change before a stable `v1.0.0`. The CLI and
-the broker service are both implemented and exercised against real deployments, not
-just designed — this tag is about making that work installable, not about declaring it
-finished.
+Parzival is still **pre-1.0**: the policy format, interfaces, and configuration layout
+may change before a stable `v1.0.0`. This release adds a per-rule guard against AI
+agent contexts, closes an ordering gap in `exec` and `mount`, and tightens what the
+broker will accept back from its helper scripts.
 
-Parzival is a credential broker: it fetches a secret from an encrypted store only when
-a command needs it, hands it to that command through the safest interface it supports,
-and wipes the temporary copy afterward. Four goals drive the design:
+### New: keep a rule's grant away from AI agents (`deny_agents`)
 
-1. **Authorization** — every fetch is checked against a deny-by-default policy before
-   the store is queried. Only approved callers, tools, and operations may use approved
-   secrets, and every decision is written to an audit log.
-2. **AI credential containment** — an AI agent can use a credential through `exec`,
-   `mount`, or a broker operation without ever receiving the raw value in its own
-   stdout, transcript, or tool output. Raw `get` is refused outright inside a detected
-   AI-agent shell, with no override.
-3. **No persistent plaintext** — credentials are retrieved at runtime and delivered
-   through a stream, a RAM-backed file, or another ephemeral mechanism, never written to
-   an ordinary plaintext credential file.
-4. **Auditability** — every authorization decision and broker operation is logged
-   (identity, reference, result) without ever logging the secret value itself.
+A policy rule can now carry `"deny_agents": true`. When Parzival detects that it is
+running inside an AI agent harness — the same detection that already refuses raw
+`get` there — the rule still matches but refuses the request. Because the first
+matching rule decides, no broader rule further down the list can grant the same
+request to the agent instead. Requests made outside an agent context, and rules
+without the field, behave exactly as before.
 
-### What's included
+- It applies to every mode the rule matches: `get`, `exec`, and `mount`.
+- It is a guard against the normal agent harness, **not** a proof that a human is
+  present. See THREAT-MODEL.md for what it does and does not establish.
+- First match still wins. An *earlier* matching allow is not affected, so to keep an
+  agent off a secret whatever `--as` label it asserts, the denying rule must cover
+  every identity and every mode that later rules grant on that secret, and sit above
+  those rules. MANUAL.md has a worked example.
+- `policy validate` and `policy check` now judge reachability, shadowing, and
+  redundancy for both agent and non-agent requests. An earlier allow that makes an
+  agent denial unreachable is an error; overlaps that only matter for agents are
+  warnings, as are `deny_agents` on a rule that already denies and an
+  agent-denying rule limited to specific identities.
+- `policy what-if --agent` asks the question for an agent context. Without the flag,
+  `what-if` answers for a request with no agent, whatever shell it is run from.
+- The audit log records the detected agent marker on decisions made in an agent
+  context.
+- Authorization deltas (`policy grant` / `policy apply`) also probe the agent context
+  when either policy uses `deny_agents`.
 
-- **`parzival get`** — streams a secret to stdout or an inherited file descriptor.
-- **`parzival probe`** — confirms a fetch would succeed without ever returning the value.
-- **`parzival exec`** — renders secrets into a RAM-backed file for one command, then
-  wipes it.
-- **`parzival mount`** (Linux) — serves profile credentials as read-only virtual files,
-  re-fetched on every open.
-- **`parzival service`** — a client for the broker daemon, for callers that must *use* a
-  credential without ever being able to *read* it.
-- **`parzival-broker`** (Linux only) — a packaged systemd service exposing a small, fixed
-  set of consumer operations over a Unix socket.
-- **Policy tooling** — `policy check`, `policy validate`, `policy what-if`, `policy
-  grant`, and `policy apply` for inspecting and safely editing the approval policy.
-- **OpenBao** is the reference backend for unattended use (ambient `bao` CLI mode or
-  AppRole broker-auth mode); 1Password is supported for interactive workflows.
+An older Parzival refuses a policy file that uses `deny_agents`, rather than ignoring
+the field. Upgrade every host that reads a policy before adding the field to it.
 
-### Packages
+### Changed: `exec` and `mount` authorize every secret before fetching any
 
-- **RPM** and **DEB** packages for the CLI and, on Linux, the broker service.
-- **Homebrew cask** for macOS (Apple Silicon).
-- **SBOMs** (SPDX, via Syft) for every published binary.
-- Release checksums are signed keylessly with **Sigstore/cosign** through GitHub Actions
-  OIDC, providing verifiable integrity for the published artifacts without maintaining a
-  signing key — verify offline with `cosign verify-blob --bundle=`.
+A profile renders all-or-nothing, but previously a profile whose second secret was
+refused had already fetched the first one from the store. `exec` and `mount` now check
+every secret in the profile against the policy first, and only then fetch. A refusal
+now means no store access, no rendering, no credential file, and no child process.
 
-### Known limits at this stage
+### Broker
 
-- macOS ships the CLI only — there is no macOS build of `parzival-broker`.
-- `gopass` and KeePassXC backends are named in the design but not implemented yet.
-- This is a prerelease: expect interface and configuration changes before `v1.0.0`.
+- Consumer operations can register a **response validator**, so the broker checks a
+  helper script's output against an exact, closed contract before returning it.
+  Validators ship for the Uptime Kuma push-monitor and Woodpecker repository-secret
+  example operations; anything the contract does not allow is refused, not passed
+  through.
+- Operations gain an optional `response_config`: administrator-owned settings for a
+  validator, read only from the root-owned operation definition and never from a
+  request. The broker refuses to start on a missing, unknown, or invalid key.
+- The push-monitor validator now requires the returned push URL to match the
+  configured origin and token format exactly.
+
+### Documentation
+
+- THREAT-MODEL.md states the disclosure invariant, and covers terminal disclosure,
+  argument-vector exposure, the in-memory residual, and the new `deny_agents` guard.
+- `parzival service` examples put `--input` before the operation name.
 
 See [README.md](README.md), [INSTALL.md](INSTALL.md), [MANUAL.md](MANUAL.md), and
 [THREAT-MODEL.md](THREAT-MODEL.md) for the full design, installation, usage, and
