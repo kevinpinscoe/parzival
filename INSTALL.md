@@ -130,6 +130,39 @@ With [`mise`](https://mise.jdx.dev/) installed, `mise install` pins the exact Go
 works. There is no separate install step from source — put the resulting binaries on `PATH`
 yourself, e.g. `install -m 0755 parzival ~/.local/bin/`.
 
+### Upgrading an RPM or DEB install
+
+Upgrade with the package manager as usual (`sudo dnf upgrade parzival`,
+`sudo apt install parzival`). An upgrade leaves the broker's units as it found them:
+
+- `parzival-broker.service` and `check-parzival-broker.timer` stay enabled or disabled, and
+  a stopped broker stays stopped.
+- A **running** broker is restarted once the new files are in place
+  (`systemctl try-restart`), so the new `parzival-broker` binary is the one serving.
+- Only a real removal (`dnf remove`, `apt remove`) stops and disables both units.
+
+**Upgrading *from* v0.2.0 or earlier is the exception.** Package managers run the *old*
+package's remove script during an upgrade. Up to and including v0.2.0, that script stopped
+and disabled the broker and its timer on every upgrade, not only on removal, and nothing
+started them again. The fixed script in the new package cannot prevent this, because the old
+package's own copy is the one that runs. For that one upgrade:
+
+```bash
+# Record the state first.
+systemctl is-enabled parzival-broker.service check-parzival-broker.timer
+
+# RPM: skip the old package's remove script.
+sudo dnf download parzival            # or use the release's .rpm asset
+sudo rpm -Uvh --nopreun parzival-*.rpm
+
+# DEB (no equivalent of --nopreun): upgrade, then put back whatever was enabled.
+sudo apt install parzival
+sudo systemctl enable --now parzival-broker.service check-parzival-broker.timer
+```
+
+Afterwards, `systemctl is-enabled` and `systemctl is-active` should report both units as
+they were before. A host that never enabled the broker needs none of this.
+
 ## Configuring a secret backend
 
 Parzival is store-agnostic at the CLI: the same `get`/`exec`/`mount`/`probe`/`service`

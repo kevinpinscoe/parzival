@@ -30,6 +30,26 @@ procedure.
   (`systemd-sysusers`). Packaged install path: `/usr/lib/sysusers.d/parzival-broker.conf`,
   applied automatically by the package's postinstall script.
 
+## Package scripts: install, upgrade, removal
+
+`scripts/postinstall.sh`, `scripts/preremove.sh` and `scripts/postremove.sh` are embedded
+**verbatim** by nfpm into both formats. Each one therefore receives its package manager's
+own arguments, and both package managers run the *old* package's remove scripts during an
+upgrade as well as on removal:
+
+| Script | RPM `$1` | DEB `$1` | Action on the broker's units |
+| --- | --- | --- | --- |
+| `postinstall.sh` | `1` install, `2`+ upgrade | `configure` (`$2` = previous version on upgrade) | `daemon-reload`; on upgrade only, `try-restart parzival-broker.service` |
+| `preremove.sh` | `0` erase, `1`+ upgrade | `remove`, `deconfigure` / `upgrade`, `failed-upgrade` | on removal only, `disable --now` the service and the check timer |
+| `postremove.sh` | `0` erase, `1` upgrade | `remove`, `purge`, `upgrade`, … | `daemon-reload` in every case |
+
+None of them ever enables or starts a unit that was not already running.
+`../scripts/test-package-scripts.sh` checks each script under every one of those arguments
+with `systemctl` stubbed out. With `--packages dist` it also checks that the built `.rpm` and
+`.deb` files embed the scripts byte-for-byte. `verify.yml` runs both. Packages up to and
+including v0.2.0 shipped a `preremove.sh` without the removal guard; see `INSTALL.md` →
+"Upgrading an RPM or DEB install".
+
 ## The administrator trust-root ownership contract
 
 The security invariant this package and the broker's own verifier

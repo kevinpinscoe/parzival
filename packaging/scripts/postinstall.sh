@@ -9,7 +9,27 @@
 # /etc/parzival-broker/environment and the trust-root files (authz.json,
 # consumers/, profiles/, openbao-secret-id.cred) in place first, none of
 # which a package can generate; see packaging/README.md and INSTALL.md.
+#
+# On an upgrade only, a broker that is already running is restarted
+# (`systemctl try-restart`, which never starts a stopped unit), so the new
+# binary actually goes into service instead of the old process running on
+# until something else restarts it. nfpm embeds this file verbatim, so $1
+# is the package manager's own argument:
+#
+#   RPM %post     $1 = instances installed after the transaction:
+#                      1 on a fresh install, 2 (or more) on an upgrade
+#   DEB postinst  $1 = configure, with $2 = the previously configured
+#                      version on an upgrade and empty on a fresh install
+#                      (abort-* arguments unwind a failed operation and are
+#                      left alone)
 set -e
+
+upgrade=0
+case "${1-}" in
+    configure) [ -n "${2-}" ] && upgrade=1 ;;
+    '' | *[!0-9]*) ;;
+    *) [ "$1" -ge 2 ] && upgrade=1 ;;
+esac
 
 if command -v systemd-sysusers >/dev/null 2>&1; then
     systemd-sysusers /usr/lib/sysusers.d/parzival-broker.conf || true
@@ -53,6 +73,14 @@ fi
 # would just fail loudly for no benefit.
 if [ -d /run/systemd/system ]; then
     systemctl daemon-reload || true
+    # After the reload, so a changed unit file is the one restarted. A
+    # failed restart is reported but does not fail the package transaction:
+    # the files are already in place, and failing here would only leave the
+    # package half-configured on top of a broker that still needs attention.
+    if [ "$upgrade" = 1 ]; then
+        systemctl try-restart parzival-broker.service ||
+            echo "parzival: warning: restarting parzival-broker.service after the upgrade failed; check: systemctl status parzival-broker.service" >&2
+    fi
 fi
 
 exit 0
