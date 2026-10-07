@@ -78,7 +78,43 @@ const (
 	// somewhere in this policy. Every one of them is a string an AI agent's tool
 	// shell can type, whatever the rule's description says the caller is.
 	FindingAgentAssertableGet = "agent-assertable-get"
+	// FindingDenyAgentsNoop: deny_agents on a deny-rule, which already refuses
+	// every request it matches, agent or not. Harmless, but it reads as if it
+	// did something.
+	FindingDenyAgentsNoop = "deny-agents-noop"
+	// FindingDenyAgentsIdentityScoped: a deny_agents rule limited to particular
+	// identities. An agent asserting any other --as label does not match it,
+	// so the denial holds for a ref only if no other rule grants that label.
+	FindingDenyAgentsIdentityScoped = "deny-agents-identity-scoped"
 )
+
+// contextDiff reports how two rules' outcomes compare across the two contexts a
+// request can be evaluated in. Coverage and intersection do not depend on
+// context — deny_agents never changes whether a rule matches — but the outcome
+// does, so every ordering finding is judged in both.
+type contextDiff struct {
+	nonAgent bool // the rules decide differently for a request with no agent detected
+	agent    bool // the rules decide differently for a request from an agent context
+}
+
+func (d contextDiff) any() bool { return d.nonAgent || d.agent }
+
+func compareOutcomes(a, b Rule) contextDiff {
+	return contextDiff{
+		nonAgent: a.outcome(false) != b.outcome(false),
+		agent:    a.outcome(true) != b.outcome(true),
+	}
+}
+
+// contextLabel names the context a finding applies in, for a message. Only an
+// agent-only difference is qualified: a difference for ordinary requests is the
+// finding the analysis always reported, and is described as it always was.
+func (d contextDiff) contextLabel() (suffix string, agent bool) {
+	if d.nonAgent {
+		return "", false
+	}
+	return " for agent contexts", true
+}
 
 // Finding is one structural observation about a policy.
 type Finding struct {
@@ -135,8 +171,10 @@ func (p *Policy) Analyze() Analysis {
 		if !covered {
 			continue
 		}
-		if p.Rules[by].Allow == p.Rules[i].Allow {
-			// Same outcome: the rule is dead weight rather than a lie.
+		diff := compareOutcomes(p.Rules[by], p.Rules[i])
+		if !diff.any() {
+			// Same outcome in both contexts: the rule is dead weight rather
+			// than a lie.
 			a.Findings = append(a.Findings, Finding{
 				Kind: FindingRedundant, Severity: SeverityWarning, Rule: i, Other: by,
 				Message: fmt.Sprintf("rule %d is redundant: rule %d already matches everything it matches, with the same %s outcome",
@@ -144,11 +182,15 @@ func (p *Policy) Analyze() Analysis {
 			})
 			continue
 		}
-		// Different outcome: the rule claims to do something it cannot do.
+		// Different outcome in at least one context: the rule claims to do
+		// something it cannot do. An agent-only difference is the case that
+		// matters most for deny_agents — an earlier allow covering a later
+		// agent-denying rule means the denial never takes effect.
+		suffix, agentCtx := diff.contextLabel()
 		a.Findings = append(a.Findings, Finding{
 			Kind: FindingUnreachable, Severity: SeverityError, Rule: i, Other: by,
-			Message: fmt.Sprintf("rule %d is unreachable: rule %d matches everything it matches first and %s, so this rule's %s never takes effect",
-				i, by, allowVerb(p.Rules[by].Allow), allowWord(p.Rules[i].Allow)),
+			Message: fmt.Sprintf("rule %d is unreachable%s: rule %d matches everything it matches first and %s, so this rule's %s never takes effect",
+				i, suffix, by, allowVerb(p.Rules[by].outcome(agentCtx)), outcomeWord(p.Rules[i], agentCtx)),
 		})
 	}
 
@@ -158,8 +200,9 @@ func (p *Policy) Analyze() Analysis {
 	// pair twice with two different explanations.
 	for i := range p.Rules {
 		for j := i + 1; j < len(p.Rules); j++ {
-			if p.Rules[i].Allow == p.Rules[j].Allow {
-				continue // same outcome: order does not change the result
+			diff := compareOutcomes(p.Rules[i], p.Rules[j])
+			if !diff.any() {
+				continue // same outcome in both contexts: order does not change the result
 			}
 			if ruleCovers(p.Rules[i], p.Rules[j]) {
 				continue // reported as unreachable above
@@ -175,10 +218,34 @@ func (p *Policy) Analyze() Analysis {
 			// accidental overlap, so the finding is reported and the operator
 			// decides. Treating it as blocking would make this tool refuse to
 			// write ordinary, correct policies.
+			suffix, agentCtx := diff.contextLabel()
 			a.Findings = append(a.Findings, Finding{
 				Kind: FindingShadows, Severity: SeverityWarning, Rule: i, Other: j,
-				Message: fmt.Sprintf("rule %d shadows part of rule %d: requests matching both are decided by rule %d (%s), not rule %d (%s) — deliberate if rule %d is an exception to rule %d, a mistake if not",
-					i, j, i, allowWord(p.Rules[i].Allow), j, allowWord(p.Rules[j].Allow), i, j),
+				Message: fmt.Sprintf("rule %d shadows part of rule %d%s: requests matching both are decided by rule %d (%s), not rule %d (%s) — deliberate if rule %d is an exception to rule %d, a mistake if not",
+					i, j, suffix, i, outcomeWord(p.Rules[i], agentCtx), j, outcomeWord(p.Rules[j], agentCtx), i, j),
+			})
+		}
+	}
+
+	// deny_agents placement. Neither finding blocks: the first is a no-op and the
+	// second is a correct policy whenever no other rule grants the ref to the
+	// labels it leaves out — which only the operator knows is intended.
+	for i, r := range p.Rules {
+		if !r.DenyAgents {
+			continue
+		}
+		if !r.Allow {
+			a.Findings = append(a.Findings, Finding{
+				Kind: FindingDenyAgentsNoop, Severity: SeverityWarning, Rule: i, Other: -1,
+				Message: fmt.Sprintf("rule %d sets deny_agents on a deny-rule, which already refuses every request it matches — the field has no effect here", i),
+			})
+			continue
+		}
+		if len(r.Identities) > 0 && !slices.Contains(r.Identities, "*") {
+			a.Findings = append(a.Findings, Finding{
+				Kind: FindingDenyAgentsIdentityScoped, Severity: SeverityWarning, Rule: i, Other: -1,
+				Message: fmt.Sprintf("rule %d denies agent contexts only for identities=%s — identity labels are self-asserted, so an agent passing another --as label is not stopped by this rule; to deny agents on secrets=%s whatever label they assert, drop the identities condition and place the rule above every broader grant",
+					i, patternList(r.Identities), patternList(r.Secrets)),
 			})
 		}
 	}
@@ -406,6 +473,15 @@ func allowVerb(allow bool) string {
 		return "allows"
 	}
 	return "denies"
+}
+
+// outcomeWord describes what a rule decides in one context, naming deny_agents
+// when that is what makes an allow-rule deny.
+func outcomeWord(r Rule, agent bool) string {
+	if r.Allow && !r.outcome(agent) {
+		return "deny (deny_agents)"
+	}
+	return allowWord(r.outcome(agent))
 }
 
 func allowWord(allow bool) string {

@@ -27,8 +27,9 @@ const policyUsage = `usage: parzival policy <command>
                             restrictions a different --as label would bypass
   validate  [--file PATH]   parse and validate a policy, then report ordering
                             problems: unreachable rules, shadowing, redundancy
-  what-if   [--file PATH] --as ID --mode MODE --ref REF [--at TIME]
-                            evaluate one request and name the rule that decides it
+  what-if   [--file PATH] --as ID --mode MODE --ref REF [--at TIME] [--agent]
+                            evaluate one request and name the rule that decides it;
+                            --agent evaluates it as coming from an AI agent context
   grant     [--interactive] [--apply] --secret REF --identity ID [...]
                             build, place, analyse and optionally install one
                             allow-rule; brokered modes unless get is named
@@ -235,6 +236,10 @@ func runPolicyWhatIf(args []string) error {
 	mode := fs.String("mode", "", "delivery mode: get, exec or mount")
 	ref := fs.String("ref", "", "the secret reference being requested")
 	at := fs.String("at", "", "evaluation time as YYYY-MM-DDTHH:MM (default: now) — for rules limited by weekday, month day or hours")
+	// what-if simulates, so it never inherits the agent context of the shell
+	// it runs in: the operator chooses which context to ask about, and the
+	// same command gives the same answer whoever types it.
+	asAgent := fs.Bool("agent", false, "evaluate as a request from a detected AI agent context (for rules that set deny_agents)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -268,6 +273,9 @@ func runPolicyWhatIf(args []string) error {
 	}
 
 	req := policy.Request{Ref: *ref, Identity: *as, Mode: *mode, Time: when}
+	if *asAgent {
+		req.Agent = whatIfAgentMarker
+	}
 	fmt.Printf("policy: %s", path)
 	if exists {
 		fmt.Printf(" (%d rules)", len(p.Rules))
@@ -289,6 +297,11 @@ func runPolicyWhatIf(args []string) error {
 	return nil
 }
 
+// whatIfAgentMarker is the Request.Agent value `what-if --agent` evaluates with.
+// It names no real environment variable, so a reader of the output cannot
+// mistake the simulation for a detection.
+const whatIfAgentMarker = "(what-if --agent)"
+
 // writeWhatIf renders one what-if result. It is separated from the command so
 // tests can assert on the text without capturing os.Stdout.
 func writeWhatIf(w io.Writer, p *policy.Policy, req policy.Request, allow bool, idx int, when time.Time) {
@@ -309,6 +322,11 @@ func writeWhatIf(w io.Writer, p *policy.Policy, req policy.Request, allow bool, 
 	}
 	fmt.Fprintf(w, "Identity:     %s\n", identity)
 	fmt.Fprintf(w, "Mode:         %s\n", req.Mode)
+	if req.Agent != "" {
+		fmt.Fprintf(w, "Context:      AI agent (simulated)\n")
+	} else {
+		fmt.Fprintf(w, "Context:      no AI agent detected\n")
+	}
 	fmt.Fprintf(w, "Secret:       %s\n", req.Ref)
 	fmt.Fprintf(w, "Evaluated at: %s\n", when.Format("2006-01-02 15:04 (Mon)"))
 
@@ -319,7 +337,13 @@ func writeWhatIf(w io.Writer, p *policy.Policy, req policy.Request, allow bool, 
 	// The first-match explanation. A refused request is usually not missing a
 	// rule — it has one, sitting below a rule that matched first — and naming
 	// that earlier rule is the difference between a useful answer and "denied".
-	if !allow && idx >= 0 {
+	if !allow && idx >= 0 && p.Rules[idx].Allow && p.Rules[idx].DenyAgents {
+		// An allow-rule that denied: the request matched it, and deny_agents
+		// refused the grant because the request came from an agent context.
+		fmt.Fprintf(w, "\nRule %d allows this request, but it sets deny_agents and the request comes\n", idx)
+		fmt.Fprintf(w, "from an AI agent context, so it is denied. The rule still matched, so no rule\n")
+		fmt.Fprintf(w, "below it was consulted — no later, broader rule can grant this to an agent.\n")
+	} else if !allow && idx >= 0 {
 		fmt.Fprintf(w, "\nRule %d matches this request before any rule below it. If you expected a\n", idx)
 		fmt.Fprintf(w, "later rule to allow this, that rule is unreachable for this request:\n")
 		fmt.Fprintf(w, "narrow rule %d, or place the allowing rule above it.\n", idx)
@@ -374,6 +398,9 @@ func indentRule(r policy.Rule, pad string) string {
 	}
 	if r.Hours != "" {
 		fmt.Fprintf(&b, "%shours: %s\n", pad, r.Hours)
+	}
+	if r.DenyAgents {
+		fmt.Fprintf(&b, "%sdeny_agents: true (refused to a detected AI agent context)\n", pad)
 	}
 
 	// Say what is unconstrained, rather than leaving the reader to infer it from

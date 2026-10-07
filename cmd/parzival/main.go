@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -49,19 +50,53 @@ func resolveIdentity(flagVal string) string {
 	return os.Getenv("PARZIVAL_IDENTITY")
 }
 
-// fetch authorizes a single reference against the policy, then retrieves it.
-// mode is the delivery mode (policy.ModeGet / ModeExec), which policy rules can
-// gate on — an identity may be permitted brokered delivery but refused the raw
-// value. See THREAT-MODEL.md §4b.
-func fetch(ctx context.Context, ref store.SecretRef, identity, mode string) ([]byte, error) {
-	if err := policy.Authorize(policy.Request{Ref: ref.Raw, Identity: identity, Mode: mode, Time: time.Now()}); err != nil {
-		return nil, err
+// Seams for the exec pipeline. Each stage after authorization touches a
+// credential — the store, the rendered template, the RAM file, the child — and
+// tests replace these to prove that a refusal reaches none of them.
+var (
+	resolveStore  = store.Resolve
+	renderProfile = (*profile.Profile).Render
+	newCredDir    = ephemeral.New
+	startChild    = func(c *exec.Cmd) error { return c.Run() }
+)
+
+// agentContext returns the environment marker identifying an AI agent harness,
+// or "" when none is detected. Every policy request carries it, so a rule that
+// sets deny_agents can refuse an agent whatever --as label it asserts. See
+// internal/agent for why this is a guard against the normal harness rather
+// than a security boundary.
+func agentContext() string {
+	if m, ok := agent.Detect(); ok {
+		return m.Env
 	}
-	backend, err := store.Resolve(ref)
+	return ""
+}
+
+// authorize checks one reference against the policy without fetching it. mode
+// is the delivery mode (policy.ModeGet / ModeExec), which policy rules can gate
+// on — an identity may be permitted brokered delivery but refused the raw
+// value. See THREAT-MODEL.md §4b.
+func authorize(ref store.SecretRef, identity, mode string) error {
+	return policy.Authorize(policy.Request{
+		Ref: ref.Raw, Identity: identity, Mode: mode, Time: time.Now(), Agent: agentContext(),
+	})
+}
+
+// retrieve fetches an already-authorized reference from its store.
+func retrieve(ctx context.Context, ref store.SecretRef) ([]byte, error) {
+	backend, err := resolveStore(ref)
 	if err != nil {
 		return nil, err
 	}
 	return backend.Get(ctx, ref)
+}
+
+// fetch authorizes a single reference against the policy, then retrieves it.
+func fetch(ctx context.Context, ref store.SecretRef, identity, mode string) ([]byte, error) {
+	if err := authorize(ref, identity, mode); err != nil {
+		return nil, err
+	}
+	return retrieve(ctx, ref)
 }
 
 func main() {
@@ -539,34 +574,52 @@ func runExec(args []string) error {
 		return err
 	}
 
-	// Authorize and fetch every secret the profile needs.
+	// Authorize every secret the profile needs before fetching any of them. A
+	// profile is all-or-nothing — it cannot render with a secret missing — so a
+	// refusal of the last secret must not leave the earlier ones already pulled
+	// from the store. Names are walked in sorted order so the audit log records
+	// the same sequence on every run.
+	names := make([]string, 0, len(prof.Secrets))
+	for name := range prof.Secrets {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	parsed := make(map[string]store.SecretRef, len(names))
+	for _, name := range names {
+		ref, err := store.ParseRef(prof.Secrets[name])
+		if err != nil {
+			return fmt.Errorf("profile %q secret %q: %w", profileName, name, err)
+		}
+		if err := authorize(ref, identity, policy.ModeExec); err != nil {
+			return err
+		}
+		parsed[name] = ref
+	}
+
+	// Only now touch the store.
 	ctx := context.Background()
-	secrets := make(map[string][]byte, len(prof.Secrets))
+	secrets := make(map[string][]byte, len(names))
 	defer func() {
 		for _, v := range secrets {
 			secret.Zero(v)
 		}
 	}()
-	for name, ref := range prof.Secrets {
-		parsed, err := store.ParseRef(ref)
-		if err != nil {
-			return fmt.Errorf("profile %q secret %q: %w", profileName, name, err)
-		}
-		val, err := fetch(ctx, parsed, identity, policy.ModeExec)
+	for _, name := range names {
+		val, err := retrieve(ctx, parsed[name])
 		if err != nil {
 			return err
 		}
 		secrets[name] = val
 	}
 
-	rendered, err := prof.Render(secrets)
+	rendered, err := renderProfile(prof, secrets)
 	if err != nil {
 		return err
 	}
 	defer secret.Zero(rendered)
 
 	// Create the RAM-backed dir and wipe it on every exit path, including signals.
-	dir, err := ephemeral.New()
+	dir, err := newCredDir()
 	if err != nil {
 		return err
 	}
@@ -595,7 +648,7 @@ func runExec(args []string) error {
 		child.Env = append(child.Env, prof.Inject.EnvDir+"="+dir.Path())
 	}
 
-	runErr := child.Run()
+	runErr := startChild(child)
 	dir.Cleanup() // wipe promptly, before returning
 	if runErr != nil {
 		var ee *exec.ExitError
